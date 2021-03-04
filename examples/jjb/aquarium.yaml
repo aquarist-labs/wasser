@@ -1,0 +1,91 @@
+#jenkins-jobs --conf storage-ci.suse.de.ini update jjb/aquarium.yaml 
+- project:
+    name: aquarium
+    test:
+      - 'setup-vagrant':
+          openstack_flavor: b2-7
+          openstack_cloud: sbg
+          github_repo: https://github.com/aquarist-labs/aquarium
+          github_poll: 'H/2 * * * *'
+          github_phrase: '.*jenkins\W+(run|test)\W+setup[_-]?vagrant'
+          conf: 'aquarium-setup-vagrant.yaml'
+
+    jobs:
+        - 'aquarium_pull_request'
+
+- job-template:
+    id: aquarium_pull_request
+    name: 'aquarium-{test}'
+    node: storage-compute
+    concurrent: true
+    properties:
+      - github:
+          url: 'https://github.com/aquarist-labs/aquarium'
+          display-name: aquarium
+      - build-discarder:
+          num-to-keep: 100
+      - authorization:
+          anonymous:
+            - job-read
+            - job-status
+            - job-discover
+        
+    wrappers:
+      - workspace-cleanup
+      - ansicolor
+    triggers:
+      - github-pull-request:
+          org-list: ['aquarist-labs']
+          cron: '{github_poll}'
+          trigger-phrase: '{github_phrase}'
+          only-trigger-phrase: true
+          #permit-all: true
+          allow-whitelist-orgs-as-admins: true
+          white-list-target-branches:
+            - main
+          auth-id: 'susebot'
+          status-add-test-results: true
+          status-context: 'jenkins/{test}'
+          triggered-status: '{test} is triggered'
+          started-status: '{test} is started'
+          cancel-builds-on-update: true
+    parameters:
+      - string:
+          name: AQUARIUM_BRANCH
+          default: '$sha1'
+          description: |
+            Examples: main, origin/pr/123/merge, refs/pull/123/merge
+      - string:
+          name: WASSER_BRANCH
+          description: |
+            leave empty for running preinstalled, give branch name to use custom environment: wip-some-feature, refs/pull/X/merge
+    scm:
+        - git:
+            url: '{github_repo}'
+            refspec: '+refs/pull/*:refs/remotes/origin/pr/*'
+            branches:
+                - '$AQUARIUM_BRANCH'
+            credentials-id: susebot
+            timeout: 15
+            clean: true
+            sparse-checkout:
+                paths:
+                - .wasser
+    wrappers:
+      - workspace-cleanup
+      - timestamps
+    builders:
+      - shell: |
+          if [[ -z "$WASSER_BRANCH" ]] ; then
+            export WS=$HOME/wasser
+            . $WS/v/bin/activate
+          else
+            export WS=$PWD/wasser
+            mkdir -p $WS
+            virtualenv $WS/v
+            . $WS/v/bin/activate
+            pip install git+https://github.com/aquarist-labs/wasser@$WASSER_BRANCH
+          fi
+          export sha1=${{AQUARIUM_BRANCH:-"$sha1"}}
+          wa run .wasser/config.yaml -t $JOB_BASE_NAME-$BUILD_NUMBER --openstack-cloud={openstack_cloud} --github-branch $sha1 --github-url {aquarium_repo}
+
