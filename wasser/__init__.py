@@ -132,6 +132,8 @@ import time
 
 from wasser.state import State
 
+wasser_remote_dir = '/opt/wasser'
+
 def get_connect(args):
     if args.debug:
         openstack.enable_logging(debug=True)
@@ -334,7 +336,9 @@ class Host():
                 client.connect(self.hostname, username=self.username, key_filename=self.identity)
                 logging.info("Connected to the host " + self.hostname)
                 break
-            except (paramiko.ssh_exception.NoValidConnectionsError, socket.error) as e:
+            except (paramiko.ssh_exception.NoValidConnectionsError,
+                    paramiko.ssh_exception.SSHException,
+                    socket.error) as e:
                 logging.debug("Exception occured: " + str(e))
                 if timeout < (time.time() - start_time):
                     logging.error("Timeout occured")
@@ -371,7 +375,6 @@ class Host():
                             if x in i:
                                 sftp.chmod(dest, int(i[x], 8))
 
-
 def provision_hst(host, status, env):
     client = host.get_client()
     server_spec = status['spec']
@@ -395,7 +398,7 @@ def provision_hst(host, status, env):
             os.path.dirname(__file__) + '/snippets/clone-git-repo.sh',
             os.path.dirname(__file__) + '/snippets/run.cmd',
         ],
-        'into': '/tmp/wasser/bin',
+        'into': f'{wasser_remote_dir}/bin',
         'mode': '0755',
     }]
     if 'copy' in server_spec:
@@ -403,7 +406,9 @@ def provision_hst(host, status, env):
         copy_spec += server_spec['copy']
 
     logging.info("Copying files to host...")
-    host_run(host, ['mkdir -p /tmp/wasser/bin'])
+    host_run(host, [f'sudo mkdir -p {wasser_remote_dir} 2>&1',
+                    f'sudo chown {host.username}: {wasser_remote_dir} 2>&1'])
+    host_run(host, [f'mkdir -p {wasser_remote_dir}/bin 2>&1'])
     host.copy_files(copy_spec)
 
     host_run(host, command_list, env)
@@ -437,7 +442,7 @@ def host_run(host, command_list, env=[]):
                 github_dir = '.',
               )
               command = render_command(
-                 "/tmp/wasser/bin/clone-git-repo.sh "
+                 f"{wasser_remote_dir}/bin/clone-git-repo.sh "
                  "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
                     env=e)
           else:
@@ -458,7 +463,7 @@ def host_run(host, command_list, env=[]):
                   e.update(github_branch=github_branch)
               c.get('name', 'clone github repo')
               command = render_command(
-                 "/tmp/wasser/bin/clone-git-repo.sh "
+                 f"{wasser_remote_dir}/bin/clone-git-repo.sh "
                  "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
                     env=e)
           else:
