@@ -2,13 +2,25 @@
 - project:
     name: aquarium
     test:
-      - 'setup-vagrant':
-          openstack_flavor: b2-7
-          openstack_cloud: sbg
+      - 'setup-vagrant-leap':
+          openstack_flavor: b2-15
+          openstack_cloud: 'de'
+          openstack_image: ''
           github_repo: https://github.com/aquarist-labs/aquarium
           github_poll: 'H/2 * * * *'
-          github_phrase: '.*jenkins\W+(run|test)\W+setup[_-]?vagrant'
-          conf: 'aquarium-setup-vagrant.yaml'
+          github_phrase: '.*jenkins\W+(run|test)\W+(opensuse|leap)'
+          github_only_trigger_phrase: false
+          conf: '.wasser/config.yaml'
+      - 'setup-vagrant-tumbleweed':
+          openstack_flavor: b2-7
+          openstack_cloud: 'de'
+          # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210307.qcow2
+          openstack_image: openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210307
+          github_repo: https://github.com/aquarist-labs/aquarium
+          github_poll: 'H/2 * * * *'
+          github_phrase: '.*jenkins\W+(run|test)\W+(opensuse|tumbleweed)'
+          github_only_trigger_phrase: false
+          conf: '.wasser/config.yaml'
 
     jobs:
         - 'aquarium_pull_request'
@@ -38,7 +50,7 @@
           org-list: ['aquarist-labs']
           cron: '{github_poll}'
           trigger-phrase: '{github_phrase}'
-          only-trigger-phrase: true
+          only-trigger-phrase: '{github_only_trigger_phrase}'
           #permit-all: true
           allow-whitelist-orgs-as-admins: true
           white-list-target-branches:
@@ -67,7 +79,6 @@
                 - '$AQUARIUM_BRANCH'
             credentials-id: susebot
             timeout: 15
-            clean: true
             sparse-checkout:
                 paths:
                 - .wasser
@@ -87,5 +98,6 @@
             pip install git+https://github.com/aquarist-labs/wasser@$WASSER_BRANCH
           fi
           export sha1=${{AQUARIUM_BRANCH:-"$sha1"}}
-          wa run .wasser/config.yaml -t $JOB_BASE_NAME-$BUILD_NUMBER --openstack-cloud={openstack_cloud} --github-branch $sha1 --github-url {aquarium_repo}
+          export TARGET_IMAGE="{openstack_image}"
+          wa run {conf} -t $JOB_BASE_NAME-$BUILD_NUMBER --openstack-cloud={openstack_cloud} --github-branch $sha1 --github-url {github_repo}
 
