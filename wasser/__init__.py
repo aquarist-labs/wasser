@@ -20,6 +20,7 @@ import signal
 
 import paramiko
 import socket
+import threading
 
 import json
 
@@ -375,6 +376,37 @@ class Host():
                             if x in i:
                                 sftp.chmod(dest, int(i[x], 8))
 
+
+    def run(self, command: str, name: str = None) -> None:
+        client = self.get_client()
+        if name:
+            logging.info(f"=== {name}")
+        for i in command.split('\n'):
+            logging.info("+ " + i)
+        stdin, stdout, stderr = client.exec_command(command)
+
+        def log_info(std, prefix):
+            while True:
+                line = std.readline()
+                if not line:
+                    break
+                logging.info(prefix + line.rstrip())
+
+        stdout_thread = threading.Thread(target=log_info, args=(stdout, '>>> '))
+        stdout_thread.start()
+
+        stderr_thread = threading.Thread(target=log_info, args=(stderr, '### '))
+        stderr_thread.start()
+
+        stdout_thread.join()
+        stderr_thread.join()
+
+        exit_code = stdout.channel.recv_exit_status()
+        if exit_code:
+            raise Exception(f"Received exit code {exit_code} while running command: {command}")
+        logging.info(f"||| exit code: {exit_code}")
+
+
 def provision_hst(host, status, env):
     client = host.get_client()
     server_spec = status['spec']
@@ -469,20 +501,7 @@ def host_run(host, command_list, env=[]):
           else:
               command = render_command(c.get('command'), env)
               name = c.get('name', None)
-      if name:
-          print(f"=== {name}")
-      for i in command.split('\n'):
-          print("+ " + i)
-      stdin, stdout, stderr = client.exec_command(command)
-      while True:
-        l = stdout.readline()
-        if not l:
-          break
-        print(">>> " + l.rstrip())
-      exit_code = stdout.channel.recv_exit_status()
-      if exit_code:
-          raise Exception(f"Received exit code {exit_code} while running command: {command}")
-      print(f"||| exit code: {exit_code}")
+      host.run(command, name=name)
 
 
 def provision_server(state):
