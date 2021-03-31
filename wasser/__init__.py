@@ -317,12 +317,79 @@ def _create_openstack_server(args, conn, state, image, flavor, key_name, user_da
             c.delete_server(target.id)
         exit(1)
 
-class Host():
+
+class Shell():
+    cmdlog_prefix = '+++ '
+    stdout_prefix = '>>> '
+    stderr_prefix = 'EEE '
+
+    @staticmethod
+    def log_info(std, prefix):
+        while True:
+            line = std.readline()
+            if not line:
+                break
+            if isinstance(line, bytes):
+                logging.info(prefix + line.decode().rstrip())
+            else:
+                logging.info(prefix + line.rstrip())
+
+    def log_cmd(self, command: str, name: str = None):
+        if name:
+            logging.info(f"=== {name}")
+        for i in command.split('\n'):
+            logging.info(f'{self.cmdlog_prefix} {i}')
+
+    def start_logging_stderr(self, stream):
+        t = threading.Thread(target=self.log_info, args=(stream, self.stderr_prefix))
+        t.start()
+        return t
+
+    def start_logging_stdout(self, stream):
+        t = threading.Thread(target=self.log_info, args=(stream, self.stdout_prefix))
+        t.start()
+        return t
+
+    def run(self, command: str, name: str = None) -> None:
+        pass
+
+
+import subprocess
+
+class LocalShell(Shell):
+    def __init__(self, user: str):
+        self.hostname = 'local'
+        self.username = user or os.environ.get('USER')
+
+
+    def copy_files(self, copy_spec):
+        logging.warning('copy files is not supported yet for local host')
+
+
+    def run(self, command: str, name: str = None) -> None:
+        self.log_cmd(command, name)
+
+        p = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,
+                                                  stderr=subprocess.PIPE)
+
+        stdout_thread = self.start_logging_stdout(p.stdout)
+        stderr_thread = self.start_logging_stderr(p.stderr)
+
+        stdout_thread.join()
+        stderr_thread.join()
+
+        exit_code = p.wait()
+        if exit_code:
+            raise Exception(f"Received exit code {exit_code} while running command: {command}")
+        logging.info(f"||| exit code: {exit_code}")
+
+
+class RemoteShell(Shell):
     def __init__(self, name='localhost', user='root', identity=None):
         self.client = None
         self.username = user
         self.hostname = name
-        self.identity = os.path.expanduser(identity)
+        self.identity = os.path.expanduser(identity or '~/.ssh/id_rsa')
 
     def connect_client(self, wait=10, timeout=300):
         """
@@ -358,8 +425,9 @@ class Host():
 
     def copy_files(self, copy_spec):
         logging.debug(f"Copy spec: {copy_spec}")
+        client = self.get_client()
         if copy_spec:
-            with self.client.open_sftp() as sftp:
+            with client.open_sftp() as sftp:
                 for i in copy_spec:
                     for path in i['from']:
                         if not path.startswith('/'):
@@ -378,25 +446,13 @@ class Host():
 
 
     def run(self, command: str, name: str = None) -> None:
+        self.log_cmd(command, name)
+
         client = self.get_client()
-        if name:
-            logging.info(f"=== {name}")
-        for i in command.split('\n'):
-            logging.info("+ " + i)
         stdin, stdout, stderr = client.exec_command(command)
 
-        def log_info(std, prefix):
-            while True:
-                line = std.readline()
-                if not line:
-                    break
-                logging.info(prefix + line.rstrip())
-
-        stdout_thread = threading.Thread(target=log_info, args=(stdout, '>>> '))
-        stdout_thread.start()
-
-        stderr_thread = threading.Thread(target=log_info, args=(stderr, '### '))
-        stderr_thread.start()
+        stdout_thread = self.start_logging_stdout(stdout)
+        stderr_thread = self.start_logging_stderr(stderr)
 
         stdout_thread.join()
         stderr_thread.join()
@@ -408,7 +464,6 @@ class Host():
 
 
 def provision_hst(host, status, env):
-    client = host.get_client()
     server_spec = status['spec']
 
     target_fqdn = status['server']['name'] + ".suse.de"
@@ -508,9 +563,8 @@ def provision_server(state):
     ip = state.status['server']['ip']
     secret_file = state.status['server']['keyfile']
     user_name = state.status['server']['username']
-    host = Host(ip, user_name, secret_file)
-    host.connect_client()
-    provision_hst(host, status=state.status, env=state.status.get('env'))
+    shell = RemoteShell(ip, user_name, secret_file)
+    provision_hst(shell, status=state.status, env=state.status.get('env'))
 
 def do_provision(args):
     with open(args.state_path, 'r') as f:
@@ -521,9 +575,8 @@ def do_provision(args):
     user_name = status['server']['username']
     secret_file = status['server']['keyfile']
     logging.info("Provisioning target %s" % status['server']['name'])
-    host = Host(ip, user_name, secret_file)
-    host.connect_client()
-    provision_hst(host, status=status, env=status.get('env'))
+    shell = RemoteShell(ip, user_name, secret_file)
+    provision_hst(shell, status=status, env=status.get('env'))
     exit(0)
 
 def do_create(args):
