@@ -97,6 +97,7 @@
             . $WS/v/bin/activate
             pip install git+https://github.com/aquarist-labs/wasser@$WASSER_BRANCH
           fi
+          export PYTHONUNBUFFERED=x
           export sha1=${{AQUARIUM_BRANCH:-"$sha1"}}
           export TARGET_IMAGE="{openstack_image}"
           wa run {conf} -t $JOB_BASE_NAME-$BUILD_NUMBER --openstack-cloud={openstack_cloud} --github-branch $sha1 --github-url {github_repo}
