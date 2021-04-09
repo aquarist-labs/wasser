@@ -46,6 +46,9 @@ def main():
     openstack_parser.add_argument('--target-image',
                                             default=os.environ.get('TARGET_IMAGE', None),
                                             help='openstack image')
+    openstack_parser.add_argument('--target-flavor',
+                                            default=os.environ.get('TARGET_FLAVOR', None),
+                                            help='openstack flavor')
     openstack_parser.add_argument('-t', '--target-name', help='overrides target name',
                                             default=os.environ.get('TARGET_NAME', ''))
     openstack_parser.add_argument('--target-keyname', help='overrides target name',
@@ -111,9 +114,23 @@ def main():
         logging.root.addHandler(h)
         logging.root.setLevel(logging.INFO)
 
+
     if not args.command:
         parser.print_help()
         exit(1)
+
+    def handle_signal(signum, frame):
+        logging.info(f"Handling signal {signum}")
+        # Instead of calling do_delete() and exit() here as follows:
+        #   do_delete(args)
+        #   exit(1)
+        # we just raise SystemExit exception so corresponding catch can do
+        # cleanup for us if required.
+        raise(SystemExit)
+    if args.command in ['run', 'create']:
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+
     if args.command == 'run':
         do_run(args)
     if args.command == 'create':
@@ -215,10 +232,45 @@ def set_name(conn, state, server_id, lockname='wasser_set_name.lock'):
                     else:
                             raise SystemExit('Unable to obtain file lock: %s' % lockfile)
 
-def _create_openstack_server(args, conn, state, image, flavor, key_name, user_data=None):
+def create_openstack_server(args, conn, state):
+    c = conn.compute
+    server_list = c.servers()
+    logging.info("Found existing servers: %s" % ", ".join([i.name for i in server_list]))
+    server_spec = state.status['spec']
+    openstack_spec = server_spec.get('openstack', {})
+    image_name = openstack_spec.get('image', None)
+    if not image_name:
+        raise Executable("image name is not specified")
+    logging.info(f"Looking up image {image_name}...")
+    image = conn.get_image(image_name)
+    if not image:
+        raise Exception(f"Cannot find image {image_name}")
+    logging.info(f"Found image with id: {image.id}")
+    flavor_name = openstack_spec.get('flavor', None)
+    if not flavor_name:
+        raise Executable("image name is not specified")
+    flavor = conn.get_flavor(flavor_name)
+    if not flavor:
+        raise Exception(f"Cannot find flavor {flavor_name}")
+    logging.info(f"Found flavor: {flavor.id}")
+    keyname = openstack_spec.get('keyname', None)
+    keypair = conn.compute.find_keypair(keyname)
+    logging.info("Image:   %s" % image.name)
+    logging.info("Flavor:  %s" % flavor.name)
+    logging.info("Keypair: %s" % keypair.name)
+    userdata = None
+    userdata_path = openstack_spec.get('userdata', None)
+    if userdata_path:
+
+        if not userdata_path.startswith('/'):
+            base = os.path.dirname(__file__)
+            if base:
+                userdata_path = base + '/' + userdata_path
+        with open(userdata_path, 'r') as f:
+            userdata=f.read()
     logging.debug("Creating target using flavor %s" % flavor)
     logging.debug("Image=%s" % image.name)
-    logging.debug("Data:\n%s" % user_data)
+    logging.debug("Data:\n%s" % userdata)
     server_spec = state.status['spec']
     openstack_spec = server_spec.get('openstack', {})
     c = conn.compute
@@ -240,8 +292,8 @@ def _create_openstack_server(args, conn, state, image, flavor, key_name, user_da
         name=target_name,
         image=image.id,
         flavor=flavor.id,
-        key_name=key_name,
-        userdata=user_data,
+        key_name=keypair.name,
+        userdata=userdata,
     )
 
     target_network = openstack_spec.get('network')
@@ -257,65 +309,53 @@ def _create_openstack_server(args, conn, state, image, flavor, key_name, user_da
     logging.debug(target)
 
     fip_id = None
-    try:
-        if rename_server:
-            # for some big nodes sometimes rename does not happen
-            # and a pause is required
-            grace_wait = 5
-            logging.info("Graceful wait %s sec before rename..." % grace_wait)
-            time.sleep(grace_wait)
-            set_name(conn, state, target.id, lockname=target_mask)
+    if rename_server:
+        # for some big nodes sometimes rename does not happen
+        # and a pause is required
+        grace_wait = 5
+        logging.info("Graceful wait %s sec before rename..." % grace_wait)
+        time.sleep(grace_wait)
+        set_name(conn, state, target.id, lockname=target_mask)
 
-        timeout = 8 * 60
-        wait = 10
-        start_time = time.time()
-        while target.status != 'ACTIVE':
-          logging.debug("Target status is: %s" % target.status)
-          if target.status == 'ERROR':
-            # only get_server_by_id can return 'fault' for a server
-            x=conn.get_server_by_id(target_id)
-            if 'fault' in x and 'message' in x['fault']:
-                raise Exception("Server creation unexpectedly failed with message: %s" % x['fault']['message'])
-            else:
-                raise Exception("Unknown failure while creating server: %s" % x)
-          if timeout > (time.time() - start_time):
-            logging.info(f'Server {target.name} is not active. Waiting {wait} seconds...')
-            time.sleep(wait)
-          else:
-            logging.error("Timeout occured, was not possible to make server active")
-            break
-          target=conn.compute.get_server(target_id)
+    timeout = 8 * 60
+    wait = 10
+    start_time = time.time()
+    while target.status != 'ACTIVE':
+      logging.debug("Target status is: %s" % target.status)
+      if target.status == 'ERROR':
+        # only get_server_by_id can return 'fault' for a server
+        x=conn.get_server_by_id(target_id)
+        if 'fault' in x and 'message' in x['fault']:
+            raise Exception("Server creation unexpectedly failed with message: %s" % x['fault']['message'])
+        else:
+            raise Exception("Unknown failure while creating server: %s" % x)
+      if timeout > (time.time() - start_time):
+        logging.info(f'Server {target.name} is not active. Waiting {wait} seconds...')
+        time.sleep(wait)
+      else:
+        logging.error("Timeout occured, was not possible to make server active")
+        break
+      target=conn.compute.get_server(target_id)
 
-        for i,v in target.addresses.items():
-            logging.info(i)
-            logging.debug(v)
+    for i,v in target.addresses.items():
+        logging.info(i)
+        logging.debug(v)
 
-        ipv4=[x['addr'] for i, nets in target.addresses.items()
-            for x in nets if x['version'] == 4][0]
-        logging.info(ipv4)
-        if target_floating:
-            faddr = conn.create_floating_ip(
-                    network=target_floating,
-                    server=target,
-                    fixed_address=ipv4,
-                    wait=True,
-                    )
-            ipv4 = faddr['floating_ip_address']
-            fip_id = faddr['id']
-            state.update(fip_id=fip_id)
+    ipv4=[x['addr'] for i, nets in target.addresses.items()
+        for x in nets if x['version'] == 4][0]
+    logging.info(ipv4)
+    if target_floating:
+        faddr = conn.create_floating_ip(
+                network=target_floating,
+                server=target,
+                fixed_address=ipv4,
+                wait=True,
+                )
+        ipv4 = faddr['floating_ip_address']
+        fip_id = faddr['id']
+        state.update(fip_id=fip_id)
 
-        state.update(ip=ipv4, name=target.name)
-        provision_server(state)
-    except:
-        logging.error("Failed to create node")
-        traceback.print_exc()
-        if not args.debug and not args.keep_nodes:
-            logging.info("Cleanup...")
-            if target_floating:
-                if fip_id:
-                    conn.delete_floating_ip(fip_id)
-            c.delete_server(target.id)
-        exit(1)
+    state.update(ip=ipv4, name=target.name)
 
 
 class Shell():
@@ -463,11 +503,42 @@ class RemoteShell(Shell):
         logging.info(f"||| exit code: {exit_code}")
 
 
-def provision_hst(host, status, env):
-    server_spec = status['spec']
+class Host():
+    def __init__(self, name, addr=None, user=None, keyfile=None):
+        self.name = name
+        self.addr = addr
+        self.user = user
+        self.keyfile = keyfile
+        if addr:
+            self.shell = RemoteShell(addr, user, keyfile)
+        else:
+            self.shell = LocalShell(user)
 
-    target_fqdn = status['server']['name'] + ".suse.de"
-    target_addr = status['server']['ip']
+    def run(self, command, **kwargs):
+        self.shell.run(command, **kwargs)
+
+    def copy_files(self, spec):
+        self.shell.copy_files(spec)
+
+
+def get_host(server):
+    server_name = server['name']
+    server_addr = server['ip']
+    secret_file = server['keyfile']
+    user_name = server['username']
+    return Host(server_name, server_addr, user_name, secret_file)
+
+
+def provision_server(state, server):
+    env = state.status.get('env')
+    server_spec = state.status['spec']
+
+    host = get_host(server)
+
+    logging.info("Provisioning target %s" % host.name)
+
+    target_fqdn = host.name + ".suse.de"
+    target_addr = host.addr
 
     command_list = []
     if server_spec.get('vars') and server_spec['vars'].get('dependencies'):
@@ -493,16 +564,84 @@ def provision_hst(host, status, env):
         copy_spec += server_spec['copy']
 
     logging.info("Copying files to host...")
-    host_run(host, [f'sudo mkdir -p {wasser_remote_dir} 2>&1',
-                    f'sudo chown {host.username}: {wasser_remote_dir} 2>&1'])
-    host_run(host, [f'mkdir -p {wasser_remote_dir}/bin 2>&1'])
+    run_routine(host, [f'sudo mkdir -p {wasser_remote_dir} 2>&1',
+                    f'sudo chown {host.user}: {wasser_remote_dir} 2>&1'])
+    run_routine(host, [f'mkdir -p {wasser_remote_dir}/bin 2>&1'])
     host.copy_files(copy_spec)
 
-    host_run(host, command_list, env)
+    run_routine(host, command_list, env)
+    logging.info(f'The server is provisioned and can be accessed by address: {host.addr}')
+
+def run_workflow(status, env):
+    """
+    Build routine workflow tree and run it through.
+    Shell routines defined as a dictionary of a list of steps:
+
+      routines:
+        "Some Routine":
+            steps:
+               - name: first step
+               - name: second step
+        "Another Routine":
+            steps:
+               - echo Single step routine
+        "Third Routine":
+            steps:
+               - name: Multi-line command
+               - |
+                   echo "message to stdout"
+                   echo "message to stderr" > /dev/stderr
+                   exit 0
+
+    Workflow provide a list of routines to execute:
+
+      workflow:
+        routines:
+            - "Some Routine"
+            - "Another Routing"
+
+    All provided routines will be run in parallel in the given order.
+    However particular routines can be run restricted to run
+    after others finish.
+
+      workflow:
+        routines:
+            - name: Some Routine
+            - name: Another Routine
+              after: Some Routine
+
+    If workflow is empty, all available routines are supposed to be run.
+
+    By default there will be only 1 routine executed at a time, but this
+    can be changed by setting the maximum number of parallel routines
+    to be executed in threads.
+
+      workflow:
+        threads: 2
+
+    """
+    server_spec = status['spec']
+    workflow = server_spec.get('workflow', {})
     routines = server_spec.get('routines', {})
-    for name in routines.keys():
+    workflow_routines = workflow.get('routines', [{'name': _} for _ in routines.keys()])
+    parallel_routines = workflow.get('threads', 1)
+
+    for r in workflow_routines:
+        if isinstance(r, str):
+            name = r
+        elif isinstance(r, dict) and 'name' in r:
+            name = r.get('name')
+        else:
+            raise Exception(
+                f'Unexpected error while processing routing in workflow: {r}')
         logging.info(f"Using routine '{name}'...")
-        host_run(host, routines[name].get('steps', []), env)
+        if name in routines:
+            server = status['server']
+            host = get_host(server)
+            run_routine(host, routines[name].get('steps', []), env)
+        else:
+            raise Exception(
+                f'Unknown routine "{name}"')
 
 
 def render_command(command, env=os.environ):
@@ -510,146 +649,142 @@ def render_command(command, env=os.environ):
     return jinja2.Template(command).render(env)
 
 
-def host_run(host, command_list, env=[]):
-    client = host.get_client()
-    for c in command_list:
-      name = None
-      if isinstance(c, str):
-          if c == 'reboot':
-              name = 'rebooting node'
-              command = 'sudo reboot &'
-          elif c == 'wait_host':
-              client = host.connect_client()
-              continue
-          elif c == 'checkout':
-              name = 'clone github repo'
-              e = dict(env)
-              e.update(
-                github_url = 'https://github.com/aquarist-labs/aquarium',
-                github_dir = '.',
-              )
-              command = render_command(
-                 f"{wasser_remote_dir}/bin/clone-git-repo.sh "
-                 "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
-                    env=e)
-          else:
-              command = render_command(c, env)
-      if isinstance(c, dict):
-          if 'checkout' in c:
-              checkout = c.get('checkout')
-              github_url = checkout.get('url', None)
-              github_dir = checkout.get('dir', None)
-              github_branch = checkout.get('branch', None)
+def run_routine(host, steps, env=[]):
+    """
+    Run routine step by step.
 
-              e = dict(env)
-              if github_url:
-                  e.update(github_url=github_url)
-              if github_dir:
-                  e.update(github_dir=github_dir)
-              if github_branch:
-                  e.update(github_branch=github_branch)
-              c.get('name', 'clone github repo')
-              command = render_command(
-                 f"{wasser_remote_dir}/bin/clone-git-repo.sh "
-                 "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
-                    env=e)
-          else:
-              command = render_command(c.get('command'), env)
-              name = c.get('name', None)
-      host.run(command, name=name)
+    Each step is represented by str or a dictionary.
+    Steps are executed in the given order.
 
+    In case of str it is used to look up of predefined
+    module command and if not found it is treated as
+    a shell script.
+    For example following internal commands can be used:
+    :reboot:        reboot current host
+    :wait_host:     wait until host is online and can run shell commands.
+    :checkout:      clone source code repo into the current directory.
 
-def provision_server(state):
-    ip = state.status['server']['ip']
-    secret_file = state.status['server']['keyfile']
-    user_name = state.status['server']['username']
-    shell = RemoteShell(ip, user_name, secret_file)
-    provision_hst(shell, status=state.status, env=state.status.get('env'))
+    In case of dict, it has following format:
+    :name:      str, name of the step, used for the reference.
+    :always:    bool, always run if True, defaults to False.
+
+    If the dict has 'command' keyword it is treated as a shell
+    script, additional keywords supported:
+
+    :env:       dict, extra environment variables.
+
+    If the dict has 'checkout' it has subkeys:
+
+    :url:       github repo to clone
+    :dir:       destination directory
+    :branch:    branch name or reference, for example, main or refs/pull/X/merge
+    """
+    client = host.shell.get_client()
+    errors = []
+    for c in steps:
+        name = None
+        always = False
+        if isinstance(c, str):
+            if c == 'reboot':
+                name = 'rebooting node'
+                command = 'sudo reboot &'
+            elif c == 'wait_host':
+                client = host.shell.connect_client()
+                continue
+            elif c == 'checkout':
+                name = 'clone github repo'
+                e = dict(env)
+                e.update(
+                  github_url = 'https://github.com/aquarist-labs/aquarium',
+                  github_dir = '.',
+                )
+                command = render_command(
+                   f"{wasser_remote_dir}/bin/clone-git-repo.sh "
+                   "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
+                      env=e)
+            else:
+                command = render_command(c, env)
+        if isinstance(c, dict):
+            if 'checkout' in c:
+                checkout = c.get('checkout')
+                github_url = checkout.get('url', None)
+                github_dir = checkout.get('dir', None)
+                github_branch = checkout.get('branch', None)
+
+                e = dict(env)
+                if github_url:
+                    e.update(github_url=github_url)
+                if github_dir:
+                    e.update(github_dir=github_dir)
+                if github_branch:
+                    e.update(github_branch=github_branch)
+                c.get('name', 'clone github repo')
+                command = render_command(
+                   f"{wasser_remote_dir}/bin/clone-git-repo.sh "
+                   "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
+                      env=e)
+            else:
+                command = render_command(c.get('command'), env)
+                name = c.get('name', None)
+            always = c.get('always', False)
+        try:
+            if errors and not always:
+                logging.debug(f'Skipping command: {name}\n{command}')
+            else:
+                host.run(command, name=name)
+        except Exception as e:
+            logging.error(e)
+            errors.append(e)
+    if errors:
+        raise errors[0]
 
 def do_provision(args):
-    with open(args.state_path, 'r') as f:
-        status = json.load(f)
-        logging.debug(status)
-    target_id = status['server']['id']
-    target_ip = status['server']['ip']
-    user_name = status['server']['username']
-    secret_file = status['server']['keyfile']
-    logging.info("Provisioning target %s" % status['server']['name'])
-    shell = RemoteShell(ip, user_name, secret_file)
-    provision_hst(shell, status=status, env=status.get('env'))
+    state = State(args)
+    provision_server(state, state.status['server'])
     exit(0)
 
 def do_create(args):
 
-    def handle_signal(signum, frame):
-        print("Handling signal", signum)
-        # Instead of calling do_delete() we raise SystemExit exception so
-        # corresponding catch can do cleanup for us if required
-        raise(SystemExit)
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    state = State(args)
 
     conn = get_connect(args)
-    c = conn.compute
-    server_list = c.servers()
-    state = State(args)
-    logging.info("Found existing servers: %s" % ", ".join([i.name for i in server_list]))
-    server_spec = state.status['spec']
-    openstack_spec = server_spec.get('openstack', {})
-    image_name = openstack_spec.get('image', None)
-    if not image_name:
-        raise Executable("image name is not specified")
-    logging.info(f"Looking up image {image_name}...")
-    image = conn.get_image(image_name)
-    if not image:
-        raise Exception(f"Cannot find image {image_name}")
-    logging.info(f"Found image with id: {image.id}")
-    flavor_name = openstack_spec.get('flavor', None)
-    if not flavor_name:
-        raise Executable("image name is not specified")
-    flavor = conn.get_flavor(flavor_name)
-    if not flavor:
-        raise Exception(f"Cannot find flavor {flavor_name}")
-    logging.info(f"Found flavor: {flavor.id}")
-    keyname = openstack_spec.get('keyname', None)
-    keypair = conn.compute.find_keypair(keyname)
-    logging.info("Image:   %s" % image.name)
-    logging.info("Flavor:  %s" % flavor.name)
-    logging.info("Keypair: %s" % keypair.name)
-    userdata = None
-    userdata_path = openstack_spec.get('userdata', None)
-    if userdata_path:
+    try:
+        create_openstack_server(args, conn, state)
+    except:
+        logging.error("Failed to create node")
+        traceback.print_exc()
+        if not args.debug and not args.keep_nodes:
+            logging.info("Cleanup...")
+            delete_openstack_server(conn, state)
+        exit(1)
+    return state
 
-        if not userdata_path.startswith('/'):
-            base = os.path.dirname(__file__)
-            if base:
-                userdata_path = base + '/' + userdata_path
-        with open(userdata_path, 'r') as f:
-            userdata=f.read()
-    _create_openstack_server(args, conn, state, image, flavor, keypair.name, userdata)
-    pass
-
-def delete_openstack_server(conn, target_id):
+def delete_openstack_server(conn, state):
+    target_id = state.status['server']['id']
+    fip_id = state.status['server'].get('fip_id')
     logging.info(f"Delete server with id '{target_id}'")
     try:
         target=conn.compute.get_server(target_id)
         conn.compute.delete_server(target.id)
     except Exception as e:
         logging.warning(e)
-
-def do_delete(args):
-    with open(args.state_path, 'r') as f:
-        status = json.load(f)
-        logging.debug(status)
-    conn = get_connect(args)
-    target_id = status['server']['id']
-    fip_id = status['server'].get('fip_id')
-    delete_openstack_server(conn, target_id)
     if fip_id:
         conn.delete_floating_ip(fip_id)
 
+def do_delete(args):
+    state = State(args)
+    conn = get_connect(args)
+    delete_openstack_server(conn, state)
+
 def do_run(args):
-    do_create(args)
+    state = do_create(args)
+    try:
+        provision_server(state, state.status['server'])
+        run_workflow(status=state.status, env=state.status.get('env'))
+    except:
+        traceback.print_exc()
+        if not args.debug and not args.keep_nodes:
+            do_delete(args)
+        exit(1)
     if not args.keep_nodes:
         do_delete(args)
