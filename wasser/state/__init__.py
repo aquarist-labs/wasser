@@ -26,14 +26,19 @@ class State():
       'env': {},
       'spec': server_spec,
     }
+
     def __init__(self, args):
         self.args = args
-        if args.path:
+        if hasattr(args, 'path') and args.path:
             self.load_spec_file(args.path)
-        self.status['env'].update(
-            github_url=args.github_url,
-            github_branch=args.github_branch,
-        )
+
+            self.status['env'].update(
+                github_url=args.github_url,
+                github_branch=args.github_branch,
+            )
+        else:
+            self.load_state(args.state_path)
+
     def server_spec(self):
         return self.status['spec']
 
@@ -61,6 +66,12 @@ class State():
             override_dict(openstack_spec, 'floating',  env='TARGET_FLOATING')
             self.status['spec'] = server_spec
         logging.debug(f'State: {self.status}')
+
+    def load_state(self, path):
+        with open(path, 'r') as f:
+            self.status = json.load(f)
+            logging.debug(self.status)
+
     def update(self, **kwargs):
         if kwargs:
             logging.debug(kwargs)
