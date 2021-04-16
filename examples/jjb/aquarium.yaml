@@ -15,7 +15,7 @@
           openstack_flavor: b2-7
           openstack_cloud: 'de'
           # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210307.qcow2
-          openstack_image: openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210307
+          openstack_image: openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210414
           github_repo: https://github.com/aquarist-labs/aquarium
           github_poll: 'H/2 * * * *'
           github_phrase: '.*jenkins\W+(run|test)\W+(opensuse|tumbleweed)'
