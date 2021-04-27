@@ -552,7 +552,7 @@ def run_routine(host, steps, env=[]):
                 )
                 command = render_command(
                    f"{wasser_remote_dir}/bin/clone-git-repo.sh "
-                   "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
+                   "{{ github_dir }} {{ github_url }} {{ github_branch }}",
                       env=e)
             else:
                 command = render_command(c, env)
@@ -573,7 +573,7 @@ def run_routine(host, steps, env=[]):
                 c.get('name', 'clone github repo')
                 command = render_command(
                    f"{wasser_remote_dir}/bin/clone-git-repo.sh "
-                   "{{ github_dir }} {{ github_url }} {{ github_branch }} 2>&1",
+                   "{{ github_dir }} {{ github_url }} {{ github_branch }}",
                       env=e)
             else:
                 command = render_command(c.get('command'), env)
