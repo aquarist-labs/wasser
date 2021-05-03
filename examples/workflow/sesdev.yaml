@@ -1,0 +1,76 @@
+wasser:
+  version: '1.0'
+
+routines:
+  openSUSE Leap:
+    steps:
+    # we need preliminary dependencies on the minimal image,
+    # because we do not prepare wasser ready images and take
+    # stock leap image
+    - name: install dependencies
+      command: |
+        for i in {1..5} ; do ping -q -c1 download.opensuse.org && break ; sleep 3 ; done
+        sudo zypper --no-gpg-checks ref
+    # also we need 'kernel-default' instead of 'kernel-default-base' for Leap
+    # in order to have nested virtualisation working
+    - name: install default kernel for kvm
+      command: |
+        sudo zypper remove -y kernel-default-base
+        sudo zypper install -y kernel-default
+    - name: install libvirt specific packages
+      command: |
+        sudo zypper -n install -t pattern kvm_server kvm_tools
+        sudo zypper install -y qemu-kvm system-group-wheel polkit
+    - reboot
+    - wait_host
+    - |
+        sudo zypper -n install gcc git-core libvirt-devel python3-devel python3-virtualenv
+    - |
+        sudo zypper install -y vagrant vagrant-libvirt
+
+    - checkout:
+        url: https://github.com/suse/sesdev
+        dir: sesdev
+    - name: bootstrap
+      command: |
+        cd sesdev
+        ./bootstrap.sh
+    - name: add user to wheel group to allow passwordless access to libvirt
+      command: |
+        sudo usermod -a -G wheel $USER
+    - name: allow users in wheel group to manage the libvirt daemon without authentication
+      command: |
+        sudo tee /etc/polkit-1/rules.d/50-libvirt.rules << END
+        polkit.addRule(function(action, subject) {
+            if (action.id == "org.libvirt.unix.manage" &&
+            subject.isInGroup("wheel")) {
+                return polkit.Result.YES;
+            }
+        });
+
+        END
+    - |
+        sudo systemctl start libvirtd
+    - name: add default pool to libvirtd
+      command: |
+        sudo virsh pool-define /dev/stdin <<EOF
+        <pool type='dir'>
+          <name>default</name>
+          <target>
+            <path>/var/lib/libvirt/images</path>
+          </target>
+        </pool>
+        EOF
+
+        sudo virsh pool-start default
+        sudo virsh pool-autostart default
+
+openstack:
+  flavor: b2-15
+  # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-JeOS.x86_64-OpenStack-Cloud.qcow2
+  image: openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210428
+  keyfile: ~/.ssh/sa
+  keyname: storage-automation
+  name: sesdev-%02d
+  userdata: openstack/user-data.yaml
+  username: opensuse
