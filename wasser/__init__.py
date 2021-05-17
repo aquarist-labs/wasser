@@ -50,6 +50,12 @@ def main():
     openstack_parser.add_argument('--target-flavor',
                                             default=os.environ.get('TARGET_FLAVOR', None),
                                             help='openstack flavor')
+    openstack_parser.add_argument('--target-floating',
+                                        default=os.environ.get('TARGET_FLOATING', None),
+                                        help='openstack floating')
+    openstack_parser.add_argument('--target-network',
+                                        default=os.environ.get('TARGET_NETWORK', None),
+                                        help='openstack network')
     openstack_parser.add_argument('-t', '--target-name', help='overrides target name',
                                             default=os.environ.get('TARGET_NAME', ''))
     openstack_parser.add_argument('--target-keyname', help='overrides target name',
@@ -273,7 +279,7 @@ def create_openstack_server(args, conn, state):
     # if the target is not kind a template, just use it as server name
     target_mask = openstack_spec.get('name')
     username = openstack_spec.get('username', 'root')
-    keyfile = openstack_spec.get('keyfile', '.ssh/id_rsa')
+    keyfile = openstack_spec.get('keyfile', '~/.ssh/id_rsa')
     state.update(username=username)
     state.update(keyfile=keyfile)
     rename_server = (target_mask != make_server_name(target_mask, 0))

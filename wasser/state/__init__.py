@@ -2,19 +2,43 @@ import logging
 import os
 import json
 import yaml
+import copy
 
-server_spec = {
-    'name':     'target%02d',
-    'image':    None,
-    'flavor':   None,
-    'keyfile':  None, 
-    'keyname':  'wasser',
-    'username': 'root',
-    'userdata': 'openstack/user-data.yaml',
-    'network':  None,
-    'floating': None,
-    'networks': ['Ext-Net'],
+default_server_spec = {
+    'openstack': {
+        'name':     'wa%02d',
+        'image':    None,
+        'flavor':   None,
+        'keyfile':  None,
+        'keyname':  'wasser',
+        'username': 'root',
+        'userdata': 'openstack/user-data.yaml',
+        'network':  None,
+        'floating': None,
+        'networks': ['Ext-Net'],
+    }
 }
+
+
+def override(src, data):
+    """
+    Returns dict based on src dict overridden with the data.
+
+    """
+    res = copy.deepcopy(src)
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key in res:
+                if isinstance(res[key], dict):
+                    res[key] = override(res[key], value)
+                else:
+                    res[key] = copy.deepcopy(value)
+            elif isinstance(value, dict):
+                res[key] = copy.deepcopy(value)
+            else:
+                res[key] = value
+    return res
+
 
 class State():
     status = {
@@ -24,7 +48,7 @@ class State():
         'ip': None,
       },
       'env': {},
-      'spec': server_spec,
+      'spec': default_server_spec,
     }
 
     def __init__(self, args):
@@ -42,29 +66,44 @@ class State():
     def server_spec(self):
         return self.status['spec']
 
-    def load_spec_file(self, spec_path):
-        with open(spec_path, 'r') as f:
-            logging.info(f'Reading spec from file: {spec_path}')
-            if spec_path.endswith('.yaml') or spec_path.endswith('.yml'):
-                server_spec = yaml.safe_load(f)
+
+    def read_spec(self, path):
+        data = None
+        with open(path, 'r') as f:
+            if path.endswith('.json'):
+                data = json.load(f)
             else:
-                server_spec = json.load(f)
-            def override_dict(obj, key, env=None, default=None):
-                if env and env in os.environ:
-                    obj[key] = os.environ.get(env, default)
-                elif default:
-                    obj[key] = default
-            openstack_spec = server_spec.get('openstack')
-            if not openstack_spec:
-                openstack_spec = server_spec['openstack'] = {}
-            override_dict(openstack_spec, 'keyfile',   default=self.args.target_keyfile)
-            override_dict(openstack_spec, 'keyname',   default=self.args.target_keyname)
-            override_dict(openstack_spec, 'image',     default=self.args.target_image)
-            override_dict(openstack_spec, 'name',      default=self.args.target_name)
-            override_dict(openstack_spec, 'flavor',    env='TARGET_FLAVOR')
-            override_dict(openstack_spec, 'network',   env='TARGET_NETWORK')
-            override_dict(openstack_spec, 'floating',  env='TARGET_FLOATING')
-            self.status['spec'] = server_spec
+                data = yaml.safe_load(f)
+        return data
+
+    def load_spec_file(self, spec_path):
+        home_config_path = os.path.expanduser('~/.wasser/config.yaml')
+        local_config_path = '.wasser.yaml'
+
+        spec = default_server_spec
+
+        for path in [ home_config_path, local_config_path ]:
+            if os.path.exists(path):
+                spec = override(spec, self.read_spec(path))
+
+        logging.info(f'Reading spec from file: {spec_path}')
+        server_spec = override(spec, self.read_spec(spec_path))
+
+        def override_key(obj, key, default=None):
+            if default:
+                obj[key] = default
+
+        openstack_spec = server_spec.get('openstack', {})
+        override_key(openstack_spec, 'cloud',     self.args.openstack_cloud)
+        override_key(openstack_spec, 'flavor',    self.args.target_flavor)
+        override_key(openstack_spec, 'floating',  self.args.target_floating)
+        override_key(openstack_spec, 'image',     self.args.target_image)
+        override_key(openstack_spec, 'keyfile',   self.args.target_keyfile)
+        override_key(openstack_spec, 'keyname',   self.args.target_keyname)
+        override_key(openstack_spec, 'name',      self.args.target_name)
+        override_key(openstack_spec, 'network',   self.args.target_network)
+        server_spec['openstack'] = openstack_spec
+        self.status['spec'] = server_spec
         logging.debug(f'State: {self.status}')
 
     def load_state(self, path):
