@@ -1,7 +1,11 @@
-#jenkins-jobs --conf storage-ci.suse.de.ini update jjb/aquarium.yaml 
+#
+# jenkins-jobs --conf path-to-config-file.ini update jjb/aquarium.yaml
+#
 - project:
     name: aquarium
     test:
+      # for new config please use 'github_only_trigger_phrase: true' so not working
+      # jobs are not triggered automatically for PR and do not block merging
       - 'setup-vagrant-leap':
           openstack_flavor: b2-15
           openstack_cloud: 'de'
@@ -21,6 +25,15 @@
           github_phrase: '.*jenkins\W+(run|test)\W+(opensuse|tumbleweed)'
           github_only_trigger_phrase: false
           conf: '.wasser/config.yaml'
+      - 'setup-vagrant-ubuntu':
+          openstack_flavor: b2-7
+          openstack_cloud: 'de'
+          openstack_image: 'Ubuntu 20.10'
+          github_repo: https://github.com/aquarist-labs/aquarium
+          github_poll: 'H/2 * * * *'
+          github_phrase: '.*jenkins\W+(run|test)\W+(ubuntu)'
+          github_only_trigger_phrase: true
+          conf: '.wasser/config-ubuntu.yaml'
 
     jobs:
         - 'aquarium_pull_request'
