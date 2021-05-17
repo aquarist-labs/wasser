@@ -77,6 +77,10 @@ def main():
                                             help='run help')
     parser_run.add_argument('path',
                                             help='path to script file')
+    parser_run.add_argument('-b', '--breakpoint',
+                                            action='append',
+                                            default=[],
+                                            help='break at step')
     parser_run.add_argument('-i', '--interactive', action='store_true',
                                             help='run steps interactively')
     parser_run.add_argument('-c', '--continue', action='store_true',
@@ -430,7 +434,7 @@ def provision_server(state, server):
     run_routine(host, command_list, env)
     logging.info(f'The server is provisioned and can be accessed by address: {host.addr}')
 
-def run_workflow(status, env):
+def run_workflow(status, env, breaks=[]):
     """
     Build routine workflow tree and run it through.
     Shell routines defined as a dictionary of a list of steps:
@@ -496,7 +500,7 @@ def run_workflow(status, env):
         if name in routines:
             server = status['server']
             host = get_host(server)
-            run_routine(host, routines[name].get('steps', []), env)
+            run_routine(host, routines[name].get('steps', []), env, breaks)
         else:
             raise Exception(
                 f'Unknown routine "{name}"')
@@ -507,7 +511,7 @@ def render_command(command, env=os.environ):
     return jinja2.Template(command).render(env)
 
 
-def run_routine(host, steps, env=[]):
+def run_routine(host, steps, env=[], breakpoints=[]):
     """
     Run routine step by step.
 
@@ -518,7 +522,8 @@ def run_routine(host, steps, env=[]):
     module command and if not found it is treated as
     a shell script.
     For example following internal commands can be used:
-    :reboot:        reboot current host
+    :reboot:        reboot current host.
+    :reconnect:     reconnect host client.
     :wait_host:     wait until host is online and can run shell commands.
     :checkout:      clone source code repo into the current directory.
 
@@ -543,10 +548,16 @@ def run_routine(host, steps, env=[]):
         name = None
         always = False
         if isinstance(c, str):
+            if c in breakpoints:
+                logging.info(f"Breakpoint at step '{c}'")
+                break
             if c == 'reboot':
                 name = 'rebooting node'
                 command = 'sudo reboot &'
             elif c == 'wait_host':
+                client = host.shell.connect_client()
+                continue
+            elif c == 'reconnect':
                 client = host.shell.connect_client()
                 continue
             elif c == 'checkout':
@@ -586,6 +597,9 @@ def run_routine(host, steps, env=[]):
                 name = c.get('name', None)
             always = c.get('always', False)
         try:
+            if name in breakpoints:
+                logging.info(f"Breakpoint at step '{name}'")
+                break
             if errors and not always:
                 logging.debug(f'Skipping command: {name}\n{command}')
             else:
@@ -636,13 +650,18 @@ def do_delete(args):
 
 def do_run(args):
     state = do_create(args)
+    error_code = 0
     try:
         provision_server(state, state.status['server'])
-        run_workflow(status=state.status, env=state.status.get('env'))
+        run_workflow(status=state.status, env=state.status.get('env'), breaks=args.breakpoint)
     except:
         traceback.print_exc()
-        if not args.debug and not args.keep_nodes:
-            do_delete(args)
-        exit(1)
-    if not args.keep_nodes:
+        error_code = 1
+    if args.keep_nodes:
+        banner = state.access_banner()
+        if banner:
+            logging.info(banner)
+    else:
         do_delete(args)
+    if error_code:
+        exit(error_code)

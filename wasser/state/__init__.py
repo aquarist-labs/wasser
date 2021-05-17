@@ -43,7 +43,7 @@ def override(src, data):
 class State():
     status = {
       'server': {
-        'name': 'ci-target',
+        'name': 'wassertank',
         'id': None,
         'ip': None,
       },
@@ -121,3 +121,20 @@ class State():
         with open(self.args.state_path, 'w') as f:
             json.dump(self.status, f, indent=2)
 
+    def access_banner(self):
+        addr = self.status.get('server', {}).get('ip', None)
+        user = self.status.get('server', {}).get('username', None)
+        skey = self.status.get('server', {}).get('keyfile', None)
+        if addr:
+            ssh = ['ssh']
+            if skey:
+                ssh += [f'-i {skey}']
+            if user:
+                ssh += [f'{user}@{addr}']
+            else:
+                ssh += [f'{addr}']
+            ssh_access = ' '.join(ssh)
+
+            return f'The server can be accessed using: {ssh_access}'
+        else:
+            return ''
