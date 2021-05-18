@@ -102,6 +102,7 @@ class State():
         override_key(openstack_spec, 'keyname',   self.args.target_keyname)
         override_key(openstack_spec, 'name',      self.args.target_name)
         override_key(openstack_spec, 'network',   self.args.target_network)
+        override_key(openstack_spec, 'username',  self.args.target_username)
         server_spec['openstack'] = openstack_spec
         self.status['spec'] = server_spec
         logging.debug(f'State: {self.status}')

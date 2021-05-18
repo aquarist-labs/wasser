@@ -62,6 +62,8 @@ def main():
                                             default=os.environ.get('TARGET_KEYNAME', ''))
     openstack_parser.add_argument('--target-keyfile', help='overrides target name',
                                             default=os.environ.get('TARGET_KEYFILE', ''))
+    openstack_parser.add_argument('--target-username', help='overrides target username',
+                                            default=os.environ.get('TARGET_USERNAME', ''))
 
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument('-s', '--state-path',
@@ -157,13 +159,15 @@ def main():
 
 wasser_remote_dir = '/opt/wasser'
 
-def get_connect(args):
+def get_connect(args, state):
+    server_spec = state.status['spec']
+    cloud = server_spec.get('openstack', {}).get('cloud')
     if args.debug:
         openstack.enable_logging(debug=True)
     else:
         openstack.enable_logging(debug=False)
         logging.getLogger("paramiko").setLevel(logging.WARNING)
-    conn = openstack.connect(args.openstack_cloud)
+    conn = openstack.connect(cloud)
     return conn
 
 def make_server_name(template, index):
@@ -619,7 +623,7 @@ def do_create(args):
 
     state = State(args)
 
-    conn = get_connect(args)
+    conn = get_connect(args, state)
     try:
         create_openstack_server(args, conn, state)
     except:
@@ -645,7 +649,7 @@ def delete_openstack_server(conn, state):
 
 def do_delete(args):
     state = State(args)
-    conn = get_connect(args)
+    conn = get_connect(args, state)
     delete_openstack_server(conn, state)
 
 def do_run(args):
