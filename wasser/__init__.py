@@ -430,18 +430,26 @@ def provision_server(state, server):
         copy_spec += server_spec['copy']
 
     logging.info("Copying files to host...")
-    run_routine(host, [f'sudo mkdir -p {wasser_remote_dir} 2>&1',
+    routine = Routine(host, env)
+    routine.run([f'sudo mkdir -p {wasser_remote_dir} 2>&1',
                     f'sudo chown {host.user}: {wasser_remote_dir} 2>&1'])
-    run_routine(host, [f'mkdir -p {wasser_remote_dir}/bin 2>&1'])
+    routine.run([f'mkdir -p {wasser_remote_dir}/bin 2>&1'])
     host.copy_files(copy_spec)
 
-    run_routine(host, command_list, env)
+    routine.run(command_list)
     logging.info(f'The server is provisioned and can be accessed by address: {host.addr}')
 
-def run_workflow(status, env, breaks=[]):
+
+class Workflow():
     """
-    Build routine workflow tree and run it through.
-    Shell routines defined as a dictionary of a list of steps:
+    Workflow provide a list of routines to execute:
+
+      workflow:
+        routines:
+            - "Some Routine"
+            - "Another Routing"
+
+    Where routines are defined as a dictionary of a list of steps:
 
       routines:
         "Some Routine":
@@ -458,13 +466,6 @@ def run_workflow(status, env, breaks=[]):
                    echo "message to stdout"
                    echo "message to stderr" > /dev/stderr
                    exit 0
-
-    Workflow provide a list of routines to execute:
-
-      workflow:
-        routines:
-            - "Some Routine"
-            - "Another Routing"
 
     All provided routines will be run in parallel in the given order.
     However particular routines can be run restricted to run
@@ -486,133 +487,155 @@ def run_workflow(status, env, breaks=[]):
         threads: 2
 
     """
-    server_spec = status['spec']
-    workflow = server_spec.get('workflow', {})
-    routines = server_spec.get('routines', {})
-    workflow_routines = workflow.get('routines', [{'name': _} for _ in routines.keys()])
-    parallel_routines = workflow.get('threads', 1)
 
-    for r in workflow_routines:
-        if isinstance(r, str):
-            name = r
-        elif isinstance(r, dict) and 'name' in r:
-            name = r.get('name')
-        else:
-            raise Exception(
-                f'Unexpected error while processing routing in workflow: {r}')
-        logging.info(f"Using routine '{name}'...")
-        if name in routines:
-            server = status['server']
-            host = get_host(server)
-            run_routine(host, routines[name].get('steps', []), env, breaks)
-        else:
-            raise Exception(
-                f'Unknown routine "{name}"')
+    def __init__(self, state, breaks=[]):
+        self.state = state
+        self.env = state.status.get('env')
+        self.breaks = breaks
 
 
-def render_command(command, env=os.environ):
+    def run(self):
+        """
+        Build routine workflow tree and run it through.
+        """
+        server_spec = self.state.status.get('spec')
+        workflow = server_spec.get('workflow', {})
+        routines = server_spec.get('routines', {})
+        workflow_routines = workflow.get('routines', [{'name': _} for _ in routines.keys()])
+        parallel_routines = workflow.get('threads', 1)
+
+        provision_server(self.state, self.state.status['server'])
+
+        for r in workflow_routines:
+            if isinstance(r, str):
+                name = r
+            elif isinstance(r, dict) and 'name' in r:
+                name = r.get('name')
+            else:
+                raise Exception(
+                    f'Unexpected error while processing routing in workflow: {r}')
+            logging.info(f"Using routine '{name}'...")
+            if name in routines:
+                steps = routines[name].get('steps', [])
+                server = self.state.status.get('server')
+                host = get_host(server)
+                routine = Routine(host, self.env, self.breaks)
+                routine.run(steps)
+            else:
+                raise Exception(
+                    f'Unknown routine "{name}"')
+
+
+def render_command(command:str , env=os.environ) -> str:
     import jinja2
     return jinja2.Template(command).render(env)
 
+class Routine():
 
-def run_routine(host, steps, env=[], breakpoints=[]):
-    """
-    Run routine step by step.
+    def __init__(self, host, env=[], breaks=[]):
+        self.host = host
+        self.env = env
+        self.breakpoints = breaks
 
-    Each step is represented by str or a dictionary.
-    Steps are executed in the given order.
+    def run(self, steps):
+        """
+        Run routine step by step.
 
-    In case of str it is used to look up of predefined
-    module command and if not found it is treated as
-    a shell script.
-    For example following internal commands can be used:
-    :reboot:        reboot current host.
-    :reconnect:     reconnect host client.
-    :wait_host:     wait until host is online and can run shell commands.
-    :checkout:      clone source code repo into the current directory.
+        Each step is represented by str or a dictionary.
+        Steps are executed in the given order.
 
-    In case of dict, it has following format:
-    :name:      str, name of the step, used for the reference.
-    :always:    bool, always run if True, defaults to False.
+        In case of str it is used to look up of predefined
+        module command and if not found it is treated as
+        a shell script.
+        For example following internal commands can be used:
+        :reboot:        reboot current host.
+        :reconnect:     reconnect host client.
+        :wait_host:     wait until host is online and can run shell commands.
+        :checkout:      clone source code repo into the current directory.
 
-    If the dict has 'command' keyword it is treated as a shell
-    script, additional keywords supported:
+        In case of dict, it has following format:
+        :name:      str, name of the step, used for the reference.
+        :always:    bool, always run if True, defaults to False.
 
-    :env:       dict, extra environment variables.
+        If the dict has 'command' keyword it is treated as a shell
+        script, additional keywords supported:
 
-    If the dict has 'checkout' it has subkeys:
+        :env:       dict, extra environment variables.
 
-    :url:       github repo to clone
-    :dir:       destination directory
-    :branch:    branch name or reference, for example, main or refs/pull/X/merge
-    """
-    client = host.shell.get_client()
-    errors = []
-    for c in steps:
-        name = None
-        always = False
-        if isinstance(c, str):
-            if c in breakpoints:
-                logging.info(f"Breakpoint at step '{c}'")
-                break
-            if c == 'reboot':
-                name = 'rebooting node'
-                command = 'sudo reboot &'
-            elif c == 'wait_host':
-                client = host.shell.connect_client()
-                continue
-            elif c == 'reconnect':
-                client = host.shell.connect_client()
-                continue
-            elif c == 'checkout':
-                name = 'clone github repo'
-                e = dict(env)
-                e.update(
-                  github_url = 'https://github.com/aquarist-labs/aquarium',
-                  github_dir = '.',
-                )
-                command = render_command(
-                   f"{wasser_remote_dir}/bin/clone-git-repo.sh "
-                   "{{ github_dir }} {{ github_url }} {{ github_branch }}",
-                      env=e)
-            else:
-                command = render_command(c, env)
-        if isinstance(c, dict):
-            if 'checkout' in c:
-                checkout = c.get('checkout')
-                github_url = checkout.get('url', None)
-                github_dir = checkout.get('dir', None)
-                github_branch = checkout.get('branch', None)
+        If the dict has 'checkout' it has subkeys:
 
-                e = dict(env)
-                if github_url:
-                    e.update(github_url=github_url)
-                if github_dir:
-                    e.update(github_dir=github_dir)
-                if github_branch:
-                    e.update(github_branch=github_branch)
-                c.get('name', 'clone github repo')
-                command = render_command(
-                   f"{wasser_remote_dir}/bin/clone-git-repo.sh "
-                   "{{ github_dir }} {{ github_url }} {{ github_branch }}",
-                      env=e)
-            else:
-                command = render_command(c.get('command'), env)
-                name = c.get('name', None)
-            always = c.get('always', False)
-        try:
-            if name in breakpoints:
-                logging.info(f"Breakpoint at step '{name}'")
-                break
-            if errors and not always:
-                logging.debug(f'Skipping command: {name}\n{command}')
-            else:
-                host.run(command, name=name)
-        except Exception as e:
-            logging.error(e)
-            errors.append(e)
-    if errors:
-        raise errors[0]
+        :url:       github repo to clone
+        :dir:       destination directory
+        :branch:    branch name or reference, for example, main or refs/pull/X/merge
+        """
+        host = self.host
+        client = host.shell.get_client()
+        errors = []
+        for c in steps:
+            name = None
+            always = False
+            if isinstance(c, str):
+                if c in self.breakpoints:
+                    logging.info(f"Breakpoint at step '{c}'")
+                    break
+                if c == 'reboot':
+                    name = 'rebooting node'
+                    command = 'sudo reboot &'
+                elif c == 'wait_host':
+                    client = host.shell.connect_client()
+                    continue
+                elif c == 'reconnect':
+                    client = host.shell.connect_client()
+                    continue
+                elif c == 'checkout':
+                    name = 'clone github repo'
+                    e = dict(self.env)
+                    e.update(
+                      github_url = 'https://github.com/aquarist-labs/aquarium',
+                      github_dir = '.',
+                    )
+                    command = render_command(
+                       f"{wasser_remote_dir}/bin/clone-git-repo.sh "
+                       "{{ github_dir }} {{ github_url }} {{ github_branch }}",
+                          env=e)
+                else:
+                    command = render_command(c, self.env)
+            if isinstance(c, dict):
+                if 'checkout' in c:
+                    checkout = c.get('checkout')
+                    github_url = checkout.get('url', None)
+                    github_dir = checkout.get('dir', None)
+                    github_branch = checkout.get('branch', None)
+
+                    e = dict(self.env)
+                    if github_url:
+                        e.update(github_url=github_url)
+                    if github_dir:
+                        e.update(github_dir=github_dir)
+                    if github_branch:
+                        e.update(github_branch=github_branch)
+                    c.get('name', 'clone github repo')
+                    command = render_command(
+                       f"{wasser_remote_dir}/bin/clone-git-repo.sh "
+                       "{{ github_dir }} {{ github_url }} {{ github_branch }}",
+                          env=e)
+                else:
+                    command = render_command(c.get('command'), self.env)
+                    name = c.get('name', None)
+                always = c.get('always', False)
+            try:
+                if name in self.breakpoints:
+                    logging.info(f"Breakpoint at step '{name}'")
+                    break
+                if errors and not always:
+                    logging.debug(f'Skipping command: {name}\n{command}')
+                else:
+                    host.run(command, name=name)
+            except Exception as e:
+                logging.error(e)
+                errors.append(e)
+        if errors:
+            raise errors[0]
 
 def do_provision(args):
     state = State(args)
@@ -656,8 +679,8 @@ def do_run(args):
     state = do_create(args)
     error_code = 0
     try:
-        provision_server(state, state.status['server'])
-        run_workflow(status=state.status, env=state.status.get('env'), breaks=args.breakpoint)
+        workflow=Workflow(state, breaks=args.breakpoint)
+        workflow.run()
     except:
         traceback.print_exc()
         error_code = 1
