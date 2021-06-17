@@ -68,7 +68,7 @@
           allow-whitelist-orgs-as-admins: true
           white-list-target-branches:
             - main
-          auth-id: 'susebot'
+          auth-id: 'aquarium-ci'
           status-add-test-results: true
           status-context: 'jenkins/{test}'
           triggered-status: '{test} is triggered'
@@ -90,7 +90,7 @@
             refspec: '+refs/pull/*:refs/remotes/origin/pr/*'
             branches:
                 - '$AQUARIUM_BRANCH'
-            credentials-id: susebot
+            credentials-id: aquarium-ci
             timeout: 15
             sparse-checkout:
                 paths:
