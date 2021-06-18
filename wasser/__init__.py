@@ -30,6 +30,7 @@ def main():
             description='wasser - workflow automation software for shell executable routines')
     parser.add_argument('-v', '--verbose', action='store_true', help='enable verbose logging')
     parser.add_argument('-q', '--quiet', action='store_true', help='subpress logging')
+    parser.add_argument('--pdb-attach', default=0, help='listen on port for pdb-attach, use with: python -m pdb_attach PID PORT')
 
 
     github_parser = argparse.ArgumentParser(add_help=False)
@@ -127,6 +128,10 @@ def main():
         logging.root.addHandler(h)
         logging.root.setLevel(logging.INFO)
 
+    if args.pdb_attach:
+        import pdb_attach
+        pdb_attach.listen(args.pdb_attach)
+        logging.info(f'Enabled pdb-attach module, command to attach the process: python -m pdb_attach {os.getpid()} {args.pdb_attach}')
 
     if not args.command:
         parser.print_help()
