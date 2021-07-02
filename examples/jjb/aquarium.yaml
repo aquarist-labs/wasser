@@ -19,7 +19,7 @@
           openstack_flavor: b2-7
           openstack_cloud: 'de'
           # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210307.qcow2
-          openstack_image: openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210414
+          openstack_image: openSUSE-Tumbleweed-JeOS.x86_64-15.1.0-OpenStack-Cloud-Snapshot20210605
           github_repo: https://github.com/aquarist-labs/aquarium
           github_poll: 'H/2 * * * *'
           github_phrase: '.*jenkins\W+(run|test)\W+(opensuse|tumbleweed)'
@@ -68,7 +68,7 @@
           allow-whitelist-orgs-as-admins: true
           white-list-target-branches:
             - main
-          auth-id: 'susebot'
+          auth-id: 'aquarium-ci'
           status-add-test-results: true
           status-context: 'jenkins/{test}'
           triggered-status: '{test} is triggered'
@@ -90,7 +90,7 @@
             refspec: '+refs/pull/*:refs/remotes/origin/pr/*'
             branches:
                 - '$AQUARIUM_BRANCH'
-            credentials-id: susebot
+            credentials-id: aquarium-ci
             timeout: 15
             sparse-checkout:
                 paths:
