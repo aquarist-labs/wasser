@@ -14,7 +14,6 @@ except of 'w' of course, since it is already taken by system utility.
 import argparse
 import logging
 import os
-import openstack
 import traceback
 import time
 import signal
@@ -23,7 +22,8 @@ import sys
 import json
 
 from wasser.shell import RemoteShell, LocalShell
-from wasser.state import State
+from wasser.state import State, NodeState
+from wasser.equip import Equipment
 
 def main():
     parser = argparse.ArgumentParser(
@@ -160,218 +160,7 @@ def main():
     exit(0)
 
 
-
-
 wasser_remote_dir = '/opt/wasser'
-
-def get_connect(args, state):
-    server_spec = state.status['spec']
-    cloud = server_spec.get('openstack', {}).get('cloud')
-    if args.debug:
-        openstack.enable_logging(debug=True)
-    else:
-        openstack.enable_logging(debug=False)
-        logging.getLogger("paramiko").setLevel(logging.WARNING)
-    conn = openstack.connect(cloud)
-    return conn
-
-def make_server_name(template, index):
-    """
-    Returns name based on the template and numeric index.
-
-    The template can contain one placeholder for the index.
-    If template does not contain any placeholder,
-    then treat template as a bare name, and return it.
-
-    :param template:    an str with name template, for example: node%00d
-    :param index:       an int value with numeric index.
-    """
-    try:
-      target = template % index
-    except:
-      target = template
-    return target
-
-def set_openstack_server_name(conn, state, server_id):
-    logging.info("Update name for server %s" % server_id)
-    server_spec = state.status['spec']
-    server_list = conn.compute.servers()
-    openstack_spec = server_spec.get('openstack', {})
-    spec_name = openstack_spec.get('name')
-    existing_servers = [i.name for i in server_list]
-    for n in range(99):
-        target = make_server_name(spec_name, n)
-        if not target in existing_servers:
-            logging.info("Setting server name to %s" % target)
-            #conn.compute.update_server(server_id, name=target)
-            #s = conn.update_server(server_id, name=target)
-            tries=20
-            while tries > 0:
-                conn.compute.update_server(server_id, name=target)
-                time.sleep(10) # wait count to 10
-                s=conn.get_server_by_id(server_id)
-                if s.name and s.name == target:
-                    break
-                else:
-                    logging.info("Server name is '%s', should be '%s'" %(s.name, target))
-                tries -= 1
-                logging.info("Left %s tries to rename the server" % tries)
-            else:
-                raise SystemExit("Cannot set name to '%s' for server '%s'" % (target, server_id))
-            return target
-    logging.error("Can't allocate name")
-    logging.info("TODO: Add wait loop for name allocation")
-
-def set_name(conn, state, server_id, lockname='wasser_set_name.lock'):
-    import fcntl
-    lockfile = '/tmp/' + lockname
-    lock_timeout = 5 * 60
-    lock_wait = 2
-    logging.debug("Trying to lock file for process " + str(os.getpid()))
-    while True:
-            try:
-                    lock = open(lockfile, 'w')
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    logging.debug(f"File locked for process {os.getpid()}")
-                    res = set_openstack_server_name(conn, state, server_id)
-                    fcntl.flock(lock, fcntl.LOCK_UN)
-                    logging.debug(f'Unlocking for {os.getpid()}')
-                    break
-            except IOError as err:
-                    # print "Can't lock: ", err
-                    if lock_timeout > 0:
-                            lock_timeout -= lock_wait
-                            logging.debug("Process", os.getpid(), "waits", lock_wait, "seconds...")
-                            time.sleep(lock_wait)
-                    else:
-                            raise SystemExit('Unable to obtain file lock: %s' % lockfile)
-
-def create_openstack_server(args, conn, state):
-    c = conn.compute
-    server_list = c.servers()
-    logging.info("Found existing servers: %s" % ", ".join([i.name for i in server_list]))
-    server_spec = state.status['spec']
-    openstack_spec = server_spec.get('openstack', {})
-    image_name = openstack_spec.get('image', None)
-    if not image_name:
-        raise Executable("image name is not specified")
-    logging.info(f"Looking up image {image_name}...")
-    image = conn.get_image(image_name)
-    if not image:
-        raise Exception(f"Cannot find image {image_name}")
-    logging.info(f"Found image with id: {image.id}")
-    flavor_name = openstack_spec.get('flavor', None)
-    if not flavor_name:
-        raise Executable("image name is not specified")
-    flavor = conn.get_flavor(flavor_name)
-    if not flavor:
-        raise Exception(f"Cannot find flavor {flavor_name}")
-    logging.info(f"Found flavor: {flavor.id}")
-    keyname = openstack_spec.get('keyname', None)
-    keypair = conn.compute.find_keypair(keyname)
-    logging.info("Image:   %s" % image.name)
-    logging.info("Flavor:  %s" % flavor.name)
-    logging.info("Keypair: %s" % keypair.name)
-    userdata = None
-    userdata_path = openstack_spec.get('userdata', None)
-    if userdata_path:
-
-        if not userdata_path.startswith('/'):
-            base = os.path.dirname(__file__)
-            if base:
-                userdata_path = base + '/' + userdata_path
-        with open(userdata_path, 'r') as f:
-            userdata=f.read()
-    logging.debug("Creating target using flavor %s" % flavor)
-    logging.debug("Image=%s" % image.name)
-    logging.debug("Data:\n%s" % userdata)
-    server_spec = state.status['spec']
-    openstack_spec = server_spec.get('openstack', {})
-    c = conn.compute
-
-    # if the target is not kind a template, just use it as server name
-    target_mask = openstack_spec.get('name')
-    username = openstack_spec.get('username', 'root')
-    keyfile = openstack_spec.get('keyfile', '~/.ssh/id_rsa')
-    state.update(username=username)
-    state.update(keyfile=keyfile)
-    rename_server = (target_mask != make_server_name(target_mask, 0))
-    if rename_server:
-        target_name = state.status['server']['name']
-    else:
-        target_name = target_mask
-    state.update(name=target_name)
-
-    params  = dict(
-        name=target_name,
-        image=image.id,
-        flavor=flavor.id,
-        key_name=keypair.name,
-        userdata=userdata,
-    )
-
-    target_network = openstack_spec.get('network')
-    target_floating = openstack_spec.get('floating')
-
-    if target_network:
-        params['network'] = target_network
-
-    target = conn.create_server(**params)
-    target_id = target.id
-    logging.info("Created target: %s" % target.id)
-    state.update(id=target.id)
-    logging.debug(target)
-
-    fip_id = None
-    if rename_server:
-        # for some big nodes sometimes rename does not happen
-        # and a pause is required
-        grace_wait = 5
-        logging.info("Graceful wait %s sec before rename..." % grace_wait)
-        time.sleep(grace_wait)
-        set_name(conn, state, target.id, lockname=target_mask)
-
-    timeout = 8 * 60
-    wait = 10
-    start_time = time.time()
-    while target.status != 'ACTIVE':
-      logging.debug("Target status is: %s" % target.status)
-      if target.status == 'ERROR':
-        # only get_server_by_id can return 'fault' for a server
-        x=conn.get_server_by_id(target_id)
-        if 'fault' in x and 'message' in x['fault']:
-            raise Exception("Server creation unexpectedly failed with message: %s" % x['fault']['message'])
-        else:
-            raise Exception("Unknown failure while creating server: %s" % x)
-      if timeout > (time.time() - start_time):
-        logging.info(f'Server {target.name} is not active. Waiting {wait} seconds...')
-        time.sleep(wait)
-      else:
-        logging.error("Timeout occured, was not possible to make server active")
-        break
-      target=conn.compute.get_server(target_id)
-
-    for i,v in target.addresses.items():
-        logging.info(i)
-        logging.debug(v)
-
-    ipv4=[x['addr'] for i, nets in target.addresses.items()
-        for x in nets if x['version'] == 4][0]
-    logging.info(ipv4)
-    if target_floating:
-        faddr = conn.create_floating_ip(
-                network=target_floating,
-                server=target,
-                fixed_address=ipv4,
-                wait=True,
-                )
-        ipv4 = faddr['floating_ip_address']
-        fip_id = faddr['id']
-        state.update(fip_id=fip_id)
-
-    state.update(ip=ipv4, name=target.name)
-
-
 
 
 class Host():
@@ -435,7 +224,7 @@ def provision_server(state, server):
         copy_spec += server_spec['copy']
 
     logging.info("Copying files to host...")
-    routine = Routine(host, env)
+    routine = Routine([host], env)
     routine.run([f'sudo mkdir -p {wasser_remote_dir} 2>&1',
                     f'sudo chown {host.user}: {wasser_remote_dir} 2>&1'])
     routine.run([f'mkdir -p {wasser_remote_dir}/bin 2>&1'])
@@ -491,6 +280,25 @@ class Workflow():
       workflow:
         threads: 2
 
+    Each routine can be run on several nodes. For example:
+
+    routines:
+      "Four Nodes":
+          nodes:
+            - label: [mgr]
+            - label: [mgr]
+            - label: [cli]
+            - label: [cli]
+          steps:
+            # this step will run on both node with 'mgr' label
+            - name: print host name
+              command: hostname -f
+              onall: mgr
+            # the next step will run only on one of the 'cli' node
+            - name: print host name
+              command: hostname -f
+              onany: cli
+
     """
 
     def __init__(self, state, breaks=[]):
@@ -498,6 +306,144 @@ class Workflow():
         self.env = state.status.get('env')
         self.breaks = breaks
 
+    def equip(self):
+        spec = self.state.status.get('spec')
+        workflow = spec.get('workflow', {})
+        routines = spec.get('routines', {})
+        workflow_routines = workflow.get('routines', [{'name': _}
+						for _ in routines.keys()])
+
+    def get_routine_hosts(self, routine_index):
+        nodes_data = self.state.status.get('nodes')
+        hosts = [get_host(_) for _ in nodes_data[routine_index]]
+        return hosts
+
+    def equip_keywords(self):
+        return ['libvirt', 'openstack']
+
+    def get_routine_node_specs(self, routine_spec):
+        common_spec = self.state.status.get('spec')
+        def override_node_spec(common_spec, node_spec):
+            equip_keyword = next((_ for _ in Equipment.available_equipments()
+                                    if _ in node_spec), None)
+            if equip_keyword:
+                a_spec = { equip_keyword: common_spec.get(equip_keyword, {}) }
+                b_spec = { equip_keyword: node_spec.get(equip_keyword) }
+                return state.override(a_spec, b_spec)
+            else:
+                return { _: common_spec.get(_)
+                                for _ in Equipment.available_equipments()
+                                    if _ in common_spec }
+                
+        if 'nodes' in routine_spec:
+            node_specs = [override_node_spec(common_spec, _)
+                            for _ in routine_spec.get('nodes', [])]
+        else:
+            # if no nodes declaired we have only one node
+            node_specs = [override_node_spec(common_spec, {})]
+        return node_specs
+
+    def get_node_specs(self, routine=None):
+        """
+        Return node specs for routine, if routine is not provided
+        then return specs for all nodes of all running routines.
+        TODO.
+        So if routine does not have 'nodes' then return single node,
+        with default spec, openstack has a priority.
+        """
+        common_spec = self.state.status.get('spec')
+        workflow = common_spec.get('workflow', {})
+        routines = common_spec.get('routines', {})
+        if routine:
+            specs = self.get_routine_node_specs(routines.get(routine, {}))
+            return specs
+        else:
+            specs = [self.get_routine_node_specs(routines.get(_, {}))
+                        for _ in self.get_run_routines()]
+            return specs
+
+
+    def provision_servers(self):
+        nodes_data = self.state.status['nodes']
+        for routine_nodes_data in nodes_data:
+            for _ in routine_nodes_data:
+                provision_server(self.state, _)
+
+    def access_banner(self):
+        nodes_data = self.state.status.get('nodes', [])
+        rr = self.get_run_routines()
+        for i in range(len(rr)):
+            first_node = nodes_data[i][0]
+            addr = first_node.get('ip', None)
+            user = first_node.get('username', None)
+            skey = first_node.get('keyfile', None)
+            if addr:
+                ssh = ['ssh']
+                if skey:
+                    ssh += [f'-i {skey}']
+                if user:
+                    ssh += [f'{user}@{addr}']
+                else:
+                    ssh += [f'{addr}']
+                ssh_access = ' '.join(ssh)
+
+                return f'The first server for routine [{rr[i]}] can be accessed using: {ssh_access}'
+            else:
+                return ''
+
+    def get_workflow(self):
+        spec = self.state.status.get('spec')
+        return spec.get('workflow', {})
+
+    def get_routines(self):
+        spec = self.state.status.get('spec')
+        return spec.get('routines', {})
+
+
+    def get_equipment(self, routine_name=None):
+        nodes_data = self.state.status.get('nodes')
+        run_routines = self.get_run_routines()
+        # init node states if it is not yet
+        if not nodes_data:
+            nodes_data = [[] for _ in run_routines]
+            self.state.status['nodes'] = nodes_data
+        logging.debug(f'Nodes Data: {nodes_data}')
+        run_equip = []
+        for i in range(len(run_routines)):
+            if routine_name and routine_name != run_routines[i]:
+                continue
+            logging.debug(f'Getting equipment for routine "{run_routines[i]}"')
+            specs = self.get_node_specs(run_routines[i])
+            if not nodes_data[i]:
+                nodes_data[i] = [{} for _ in specs]
+            equip = [Equipment.from_node_spec(
+                            NodeState(self.state, nodes_data[i][x]),
+                            specs[x])
+                                for x in range(len(specs))]
+            run_equip += equip
+        return run_equip
+
+
+    def create_nodes(self):
+        for e in self.get_equipment():
+            logging.debug(f'Creating equipment {e}')
+            e.create()
+
+    def delete_nodes(self):
+        for e in self.get_equipment():
+            logging.debug(f'Deleting equipment {e}')
+            e.delete()
+
+    def get_run_routines(self):
+        """Return list of names of run routines"""
+        spec = self.state.status.get('spec')
+        workflow = spec.get('workflow', {})
+        routines = spec.get('routines', {})
+        workflow_routines = workflow.get('routines', [{'name': _}
+						for _ in routines.keys()])
+        names = [_ if isinstance(_, str) else _.get('name')
+ 						for _ in workflow_routines]
+        return names
 
     def run(self):
         """
@@ -509,9 +455,10 @@ class Workflow():
         workflow_routines = workflow.get('routines', [{'name': _} for _ in routines.keys()])
         parallel_routines = workflow.get('threads', 1)
 
-        provision_server(self.state, self.state.status['server'])
+        self.provision_servers()
 
-        for r in workflow_routines:
+        for i in range(len(workflow_routines)):
+            r = workflow_routines[i]
             if isinstance(r, str):
                 name = r
             elif isinstance(r, dict) and 'name' in r:
@@ -522,9 +469,8 @@ class Workflow():
             logging.info(f"Using routine '{name}'...")
             if name in routines:
                 steps = routines[name].get('steps', [])
-                server = self.state.status.get('server')
-                host = get_host(server)
-                routine = Routine(host, self.env, self.breaks)
+                hosts = self.get_routine_hosts(i)
+                routine = Routine(hosts, self.env, self.breaks)
                 routine.run(steps)
             else:
                 raise Exception(
@@ -537,8 +483,8 @@ def render_command(command:str , env=os.environ) -> str:
 
 class Routine():
 
-    def __init__(self, host, env=[], breaks=[]):
-        self.host = host
+    def __init__(self, nodes, env=[], breaks=[]):
+        self.host = nodes[0]
         self.env = env
         self.breakpoints = breaks
 
@@ -643,54 +589,41 @@ class Routine():
             raise errors[0]
 
 def do_provision(args):
-    state = State(args)
+    state = State().with_args(args)
     provision_server(state, state.status['server'])
     exit(0)
 
 def do_create(args):
 
-    state = State(args)
-
-    conn = get_connect(args, state)
+    state = State().with_args(args)
+    workflow = Workflow(state, breaks=args.breakpoint)
     try:
-        create_openstack_server(args, conn, state)
+        workflow.create_nodes()
     except:
-        logging.error("Failed to create node")
+        logging.error("Failed to create nodes")
         traceback.print_exc()
         if not args.debug and not args.keep_nodes:
             logging.info("Cleanup...")
-            delete_openstack_server(conn, state)
+            workflow.delete_nodes()
         exit(1)
-    return state
+    return workflow
 
-def delete_openstack_server(conn, state):
-    target_id = state.status['server']['id']
-    fip_id = state.status['server'].get('fip_id')
-    logging.info(f"Delete server with id '{target_id}'")
-    try:
-        target=conn.compute.get_server(target_id)
-        conn.compute.delete_server(target.id)
-    except Exception as e:
-        logging.warning(e)
-    if fip_id:
-        conn.delete_floating_ip(fip_id)
 
 def do_delete(args):
-    state = State(args)
-    conn = get_connect(args, state)
-    delete_openstack_server(conn, state)
+    state = State().load(args)
+    workflow = Workflow(state)
+    workflow.delete_nodes()
 
 def do_run(args):
-    state = do_create(args)
+    workflow = do_create(args)
     error_code = 0
     try:
-        workflow=Workflow(state, breaks=args.breakpoint)
         workflow.run()
     except:
         traceback.print_exc()
         error_code = 1
     if args.keep_nodes:
-        banner = state.access_banner()
+        banner = workflow.access_banner()
         if banner:
             logging.info(banner)
     else:

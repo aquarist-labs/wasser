@@ -4,6 +4,9 @@ import json
 import yaml
 import copy
 
+from pathlib import Path
+from typing import Dict
+
 default_server_spec = {
     'openstack': {
         'name':     'wa%02d',
@@ -39,22 +42,39 @@ def override(src, data):
                 res[key] = value
     return res
 
-
-class State():
-    status = {
+status_default_data =  {
       'server': {
         'name': 'wassertank',
         'id': None,
         'ip': None,
       },
+      # routine nodes dictionary
+      'nodes': [],
       'env': {},
       'spec': default_server_spec,
     }
 
-    def __init__(self, args):
+
+class State():
+    status = None
+    debug = False
+    def __init__(self, status=None):
+        if status:
+            self.status = copy.deepcopy(status)
+            logging.debug(self.status)
+        else:
+            self.status = copy.deepcopy(status_default_data)
+
+    @staticmethod
+    def from_args(args):
+        return State().with_args(args)
+
+    def with_args(self, args):
         self.args = args
+        self.debug = args.debug
         if hasattr(args, 'path') and args.path:
-            self.load_spec_file(args.path)
+            self.load_spec(args.path)
+            self.override_openstack_spec(self.args)
 
             self.status['env'].update(
                 github_url=args.github_url,
@@ -62,6 +82,16 @@ class State():
             )
         else:
             self.load_state(args.state_path)
+        logging.debug(f'State: {self.status}')
+        return self
+
+    def load(self, args):
+        self.args = args
+        self.debug = args.debug
+        self.load_state(args.state_path)
+        logging.debug(f'State: {self.status}')
+        return self
+
 
     def server_spec(self):
         return self.status['spec']
@@ -76,66 +106,85 @@ class State():
                 data = yaml.safe_load(f)
         return data
 
-    def load_spec_file(self, spec_path):
-        home_config_path = os.path.expanduser('~/.wasser/config.yaml')
-        local_config_path = '.wasser.yaml'
-
-        spec = default_server_spec
-
-        for path in [ home_config_path, local_config_path ]:
-            if os.path.exists(path):
-                spec = override(spec, self.read_spec(path))
-
-        logging.info(f'Reading spec from file: {spec_path}')
-        server_spec = override(spec, self.read_spec(spec_path))
-
+    @staticmethod
+    def _override_openstack_spec(spec, args):
         def override_key(obj, key, default=None):
             if default:
                 obj[key] = default
 
-        openstack_spec = server_spec.get('openstack', {})
-        override_key(openstack_spec, 'cloud',     self.args.openstack_cloud)
-        override_key(openstack_spec, 'flavor',    self.args.target_flavor)
-        override_key(openstack_spec, 'floating',  self.args.target_floating)
-        override_key(openstack_spec, 'image',     self.args.target_image)
-        override_key(openstack_spec, 'keyfile',   self.args.target_keyfile)
-        override_key(openstack_spec, 'keyname',   self.args.target_keyname)
-        override_key(openstack_spec, 'name',      self.args.target_name)
-        override_key(openstack_spec, 'network',   self.args.target_network)
-        override_key(openstack_spec, 'username',  self.args.target_username)
-        server_spec['openstack'] = openstack_spec
-        self.status['spec'] = server_spec
-        logging.debug(f'State: {self.status}')
+        _spec = spec.get('openstack', {})
+
+        openstack_params = {
+            'cloud':     args.openstack_cloud,
+            'flavor':    args.target_flavor,
+            'floating':  args.target_floating,
+            'image':     args.target_image,
+            'keyfile':   args.target_keyfile,
+            'keyname':   args.target_keyname,
+            'name':      args.target_name,
+            'network':   args.target_network,
+            'username':  args.target_username,
+        }
+        for k, v in openstack_params.items():
+            override_key(_spec, k, v)
+        spec['openstack'] = _spec
+        return _spec
+
+    def override_openstack_spec(self, args):
+        self._override_openstack_spec(self.status.get('spec'), args)
+
+    def read_spec_files(self, paths):
+        for path in paths:
+            if os.path.exists(path):
+                logging.debug(f'Reading spec from file: {path}')
+                yield self.read_spec(path)
+
+            
+    def load_spec(self, spec_path):
+        spec_paths = [
+            os.path.expanduser('~/.wasser/config.yaml'),
+            '.wasser.yaml',
+            spec_path
+        ]
+        
+        specs = self.read_spec_files(spec_paths)
+        logging.debug(f'Overriding status...')
+        self.override_status_specs(specs)
+
+
+    def override_status_specs(self, specs):
+        spec = default_server_spec
+        for s in specs:
+            spec = override(spec, s)
+        self.status['spec'] = spec
+        return self
+
 
     def load_state(self, path):
         with open(path, 'r') as f:
             self.status = json.load(f)
             logging.debug(self.status)
 
-    def update(self, **kwargs):
-        if kwargs:
-            logging.debug(kwargs)
-        for k,v in kwargs.items():
-            logging.debug('override %s with %s' % (k,v))
-            self.status['server'][k] = v
+    def save(self):
         logging.debug("Saving status to '%s'" % self.args.state_path)
         with open(self.args.state_path, 'w') as f:
             json.dump(self.status, f, indent=2)
 
-    def access_banner(self):
-        addr = self.status.get('server', {}).get('ip', None)
-        user = self.status.get('server', {}).get('username', None)
-        skey = self.status.get('server', {}).get('keyfile', None)
-        if addr:
-            ssh = ['ssh']
-            if skey:
-                ssh += [f'-i {skey}']
-            if user:
-                ssh += [f'{user}@{addr}']
-            else:
-                ssh += [f'{addr}']
-            ssh_access = ' '.join(ssh)
 
-            return f'The server can be accessed using: {ssh_access}'
-        else:
-            return ''
+class NodeState():
+    # node data reference object
+    data: Dict = None
+    # wasser root state
+    state: State = None
+    def __init__(self, state: State, data: Dict):
+        self.data = data
+        self.state = state
+
+    def update(self,
+                    **kwargs):
+        if kwargs:
+            logging.debug(kwargs)
+        for k,v in kwargs.items():
+            logging.debug('override %s with %s' % (k,v))
+            self.data[k] = v
+        self.state.save()
