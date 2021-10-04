@@ -525,6 +525,7 @@ class Routine():
         for c in steps:
             name = None
             always = False
+            timeout = None
             if isinstance(c, str):
                 if c in self.breakpoints:
                     logging.info(f"Breakpoint at step '{c}'")
@@ -540,6 +541,7 @@ class Routine():
                     continue
                 elif c == 'checkout':
                     name = 'clone github repo'
+                    timeout = 15*60
                     e = dict(self.env)
                     e.update(
                       github_url = 'https://github.com/aquarist-labs/aquarium',
@@ -554,6 +556,7 @@ class Routine():
             if isinstance(c, dict):
                 if 'checkout' in c:
                     checkout = c.get('checkout')
+                    timeout = 15*60
                     github_url = checkout.get('url', None)
                     github_dir = checkout.get('dir', None)
                     github_branch = checkout.get('branch', None)
@@ -581,7 +584,7 @@ class Routine():
                 if errors and not always:
                     logging.debug(f'Skipping command: {name}\n{command}')
                 else:
-                    host.run(command, name=name)
+                    host.run(command, name=name, timeout=timeout)
             except Exception as e:
                 logging.error(e)
                 errors.append(e)

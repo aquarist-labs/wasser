@@ -38,7 +38,7 @@ class Shell():
         t.start()
         return t
 
-    def run(self, command: str, name: str = None) -> None:
+    def run(self, command: str, name: str = None, timeout: int = None) -> None:
         pass
 
 
@@ -54,7 +54,7 @@ class LocalShell(Shell):
         logging.warning('copy files is not supported yet for local host')
 
 
-    def run(self, command: str, name: str = None) -> None:
+    def run(self, command: str, name: str = None, timeout: int = None) -> None:
         self.log_cmd(command, name)
 
         p = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,
@@ -63,10 +63,11 @@ class LocalShell(Shell):
         stdout_thread = self.start_logging_stdout(p.stdout)
         stderr_thread = self.start_logging_stderr(p.stderr)
 
+        exit_code = p.wait(timeout=timeout)
+
         stdout_thread.join()
         stderr_thread.join()
 
-        exit_code = p.wait()
         if exit_code:
             raise Exception(f"Received exit code {exit_code} while running command: {command}")
         logging.info(f"||| exit code: {exit_code}")
@@ -133,11 +134,11 @@ class RemoteShell(Shell):
                                 sftp.chmod(dest, int(i[x], 8))
 
 
-    def run(self, command: str, name: str = None) -> None:
+    def run(self, command: str, name: str = None, timeout: int = None) -> None:
         self.log_cmd(command, name)
 
         client = self.get_client()
-        stdin, stdout, stderr = client.exec_command(command)
+        stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
 
         stdout_thread = self.start_logging_stdout(stdout)
         stderr_thread = self.start_logging_stderr(stderr)
