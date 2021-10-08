@@ -141,7 +141,28 @@ class OpenStackEquipment(Equipment):
         if target_network:
             params['network'] = target_network
 
-        target = conn.create_server(**params)
+        try:
+            target = conn.create_server(**params)
+        #Traceback (most recent call last):
+        #  File "/home/jenkins/wasser/v/lib/python3.6/site-packages/openstack/cloud/_utils.py", line 425, in shade_exceptions
+        #    yield
+        #  File "/home/jenkins/wasser/v/lib/python3.6/site-packages/openstack/cloud/_compute.py", line 913, in create_server
+        #    if server.status == 'ERROR':
+        # AttributeError: 'NoneType' object has no attribute 'status'
+        except AttributeError as e:
+            if "no attribute 'status'" in str(e):
+                logging.error(f'Failed to create server due to openstack bug')
+                logging.warning(f'Going to cleanup server after a second')
+                time.sleep(1)
+                try:
+                    t=conn.compute.get_server(target_name)
+                    if t:
+                        conn.compute.delete_server(t.id)
+                except Exception as ee:
+                    if 'Multiple matches found' in str(e):
+                        logging.error(f'Cannot delete {target_name} because several server found')
+            raise(e)
+
         target_id = target.id
         logging.info("Created target: %s" % target.id)
         node_state.update(id=target.id)
