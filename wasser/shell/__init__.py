@@ -146,6 +146,18 @@ class RemoteShell(Shell):
         stdout_thread.join()
         stderr_thread.join()
 
+        failed = False
+        if stdout_thread.is_alive():
+            logging.error('stdout {stdout_thread} is alive')
+            failed = True
+
+        if stderr_thread.is_alive():
+            logging.error('stderr {stderr_thread} is alive')
+            failed = True
+
+        # in case of timeout the recv_exit_status will block on status_even.wait
+        if failed:
+            raise Exception(f'Command failed because probable timeout {timeout} seconds')
         exit_code = stdout.channel.recv_exit_status()
         if exit_code:
             raise Exception(f"Received exit code {exit_code} while running command: {command}")
