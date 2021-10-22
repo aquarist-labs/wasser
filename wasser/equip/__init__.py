@@ -149,8 +149,11 @@ class OpenStackEquipment(Equipment):
         #  File "/home/jenkins/wasser/v/lib/python3.6/site-packages/openstack/cloud/_compute.py", line 913, in create_server
         #    if server.status == 'ERROR':
         # AttributeError: 'NoneType' object has no attribute 'status'
-        except AttributeError as e:
-            if "no attribute 'status'" in str(e):
+        #
+        # which is mapped to another:
+        #   openstack.exceptions.SDKException: Error in creating instance
+        except Exception as e:
+            if "Error in creating instance" in str(e):
                 logging.error(f'Failed to create server due to openstack bug')
                 logging.warning(f'Going to cleanup server after a second')
                 time.sleep(1)
