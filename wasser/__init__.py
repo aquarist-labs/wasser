@@ -573,6 +573,11 @@ class Routine():
                        f"{wasser_remote_dir}/bin/clone-git-repo.sh "
                        "{{ github_dir }} {{ github_url }} {{ github_branch }}",
                           env=e)
+                elif 'wait_seconds' in c:
+                    seconds = int(c.get('wait_seconds') or 5)
+                    logging.info(f'Waiting {seconds} seconds...')
+                    time.sleep(seconds)
+                    continue
                 else:
                     command = render_command(c.get('command'), self.env)
                     name = c.get('name', None)
