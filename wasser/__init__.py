@@ -560,10 +560,19 @@ class Routine():
                     github_url = checkout.get('url', None)
                     github_dir = checkout.get('dir', None)
                     github_branch = checkout.get('branch', None)
-
                     e = dict(self.env)
-                    if github_url:
-                        e.update(github_url=github_url)
+                    if e.get('github_url', ''):
+                        logging.debug("The following GitHub URL value found"
+                              f" in the environment: {e['github_url']}")
+                    else:
+                        # if there is no github url we input it interactively
+                        while not github_url:
+                            print("No GitHub URL provided in config, please enter:")
+                            github_url = sys.stdin.readline().rstrip()
+
+                        if github_url:
+                            e.update(github_url=github_url)
+
                     if github_dir:
                         e.update(github_dir=github_dir)
                     if github_branch:
