@@ -1,0 +1,88 @@
+wasser:
+  version: '1.0'
+
+routines:
+  openSUSE Leap:
+    steps:
+    # we need preliminary dependencies on the minimal image,
+    # because we do not prepare wasser ready images and take
+    # stock leap image
+    - name: install dependencies
+      command: |
+        for i in {1..5} ; do ping -q -c1 download.opensuse.org && break ; sleep 3 ; done
+        sudo zypper --no-gpg-checks ref
+        sudo zypper install -y git
+    # also we need 'kernel-default' instead of 'kernel-default-base' for Leap
+    # in order to have nested virtualisation working
+    - name: install default kernel for kvm
+      command: |
+        sudo zypper remove -y kernel-default-base
+        sudo zypper install -y kernel-default
+    - name: install kvm/qemu and libvirt
+      command:
+        sudo zypper -n install -t pattern kvm_server kvm_tools
+    - name: install vagrant
+      command:
+        sudo zypper -n install vagrant vagrant-libvirt
+    - reboot
+    - wait_host
+    - checkout:
+        url: "https://github.com/SUSE/sesdev"
+        branch: "master"
+        dir: "sesdev"
+    - name: install sesdev dependencies
+      command:
+        sudo zypper install -y gcc git-core libvirt-devel python3-devel python3-virtualenv
+    - name: bootstrap sesdev
+      command: |
+        cd sesdev
+        ./bootstrap.sh
+    - name: print help
+      command: |
+        source sesdev/venv/bin/activate
+        sesdev --help
+    - name: install libvirt specific packages
+      command: |
+        sudo zypper install -y qemu-kvm polkit 2>&1
+    - name: add user to wheel group to allow passwordless access to libvirt
+      command: |
+        sudo usermod -a -G wheel $USER
+    - name: allow users in wheel group to manage the libvirt daemon without authentication
+      command: |
+        sudo tee /etc/polkit-1/rules.d/50-libvirt.rules << END
+        polkit.addRule(function(action, subject) {
+            if (action.id == "org.libvirt.unix.manage" &&
+            subject.isInGroup("wheel")) {
+                return polkit.Result.YES;
+            }
+        });
+
+        END
+    - name: make sure libvirtd is running
+      command: |
+        sudo systemctl enable libvirtd
+        sudo systemctl start libvirtd
+    - name: add default pool
+      command: |
+        sudo virsh pool-define /dev/stdin <<EOF
+        <pool type='dir'>
+          <name>default</name>
+          <target>
+            <path>/var/lib/libvirt/images</path>
+          </target>
+        </pool>
+        EOF
+    - name: make sure default pool is running
+      command: |
+        sudo virsh pool-start default
+        sudo virsh pool-autostart default
+
+openstack:
+  flavor: b2-15
+  #image: openSUSE-Leap-15.2-JeOS.x86_64-15.2-OpenStack-Cloud-Build31.348
+  image: openSUSE-Leap-15.4-JeOS.x86_64-15.4-OpenStack-Cloud-Build6.195
+  keyfile: ~/.ssh/sa
+  keyname: storage-automation
+  name: sesdev-%02d
+  userdata: openstack/user-data.yaml
+  username: opensuse
