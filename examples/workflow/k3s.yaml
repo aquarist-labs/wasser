@@ -1,0 +1,97 @@
+wasser:
+  version: '1.0'
+
+routines:
+  openSUSE Leap:
+    steps:
+    # we need preliminary dependencies on the minimal image,
+    # because we do not prepare wasser ready images and take
+    # stock leap image
+    - name: install dependencies
+      command: |
+        for i in {1..5} ; do ping -q -c1 download.opensuse.org && break ; sleep 3 ; done
+        sudo zypper --no-gpg-checks ref
+        sudo zypper install -y git
+    # also we need 'kernel-default' instead of 'kernel-default-base' for Leap
+    # in order to have nested virtualisation working
+    - name: install default kernel for kvm
+      command: |
+        sudo zypper remove -y kernel-default-base
+        sudo zypper install -y kernel-default
+    - name: install kvm/qemu and libvirt
+      command:
+        sudo zypper -n install -t pattern kvm_server kvm_tools
+    - name: install libvirt specific packages
+      command: |
+        sudo zypper install -y qemu-kvm polkit
+    - name: add user to wheel group to allow passwordless access to libvirt
+      command: |
+        sudo usermod -a -G wheel $USER
+    - name: allow users in wheel group to manage the libvirt daemon without authentication
+      command: |
+        sudo tee /etc/polkit-1/rules.d/50-libvirt.rules << END
+        polkit.addRule(function(action, subject) {
+            if (action.id == "org.libvirt.unix.manage" &&
+            subject.isInGroup("wheel")) {
+                return polkit.Result.YES;
+            }
+        });
+
+        END
+    - name: make sure libvirtd is running on boot
+      command: |
+        sudo systemctl enable libvirtd
+    - name: install vagrant
+      command:
+        sudo zypper -n install vagrant vagrant-libvirt
+    - reboot
+    - wait_host
+    - name: kick off the libvirtd if it is not yet started
+      command: |
+        sudo systemctl start libvirtd
+    - name: add default pool
+      command: |
+        sudo virsh pool-define /dev/stdin <<EOF
+        <pool type='dir'>
+          <name>default</name>
+          <target>
+            <path>/var/lib/libvirt/images</path>
+          </target>
+        </pool>
+        EOF
+    - name: make sure default pool is running
+      command: |
+        sudo virsh pool-start default
+        sudo virsh pool-autostart default
+    - name: install k9s and helm
+      command: |
+        sudo zypper install -y k9s helm
+    - name: install k3s
+      command: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="v1.24.10+k3s1" sh -s - server --cluster-init
+    - name: save kubeconfig
+      command: |
+          mkdir ~/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          sudo chown -R $USER: ~/.kube
+
+    #- name: setup rancher helm repos
+    #  command: |
+    #      export KUBECONFIG=/home/$USER/.kube/config
+    #      helm repo add rancher-latest https://releases.rancher.com/server-charts/latest
+    #      kubectl create namespace cattle-system
+    #      kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.11.0/cert-manager.crds.yaml
+    #      helm repo add jetstack https://charts.jetstack.io
+    #      helm repo update
+
+
+
+openstack:
+  image: Leap-15.4-JeOS-Build31.185
+  flavor: b2-15
+  keyfile: ~/.ssh/sa3
+  keyname: sa3
+  network: Ext-Net
+  name: k3s-%02d
+  userdata: openstack/user-data.yaml
+  username: opensuse
